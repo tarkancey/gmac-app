@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V10.48", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V10.49", page_icon="⚔️", layout="wide")
+
+# --- HAFIZA (SESSION STATE) AYARLARI ---
+if "analiz_df" not in st.session_state:
+    st.session_state.analiz_df = None
 
 # --- YARDIMCI FONKSİYONLAR ---
 TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 179, 345, 197, 106, 210, 2, 3]
@@ -76,7 +80,6 @@ def get_stats(lig_id, team_id, season_year, api_key):
         return {"form": s.get('form', "")[-5:], "hf": float(s['goals']['for']['average']['home']), "ha": float(s['goals']['against']['average']['home']), "af": float(s['goals']['for']['average']['away']), "aa": float(s['goals']['against']['average']['away'])} if s else None
     except: return None
 
-# V10.48 GÜNCELLEMESİ: Puan Gücü (Power Balance) Eklendi
 def calculate_momentum_xg(h_stats, a_stats, h_pts, a_pts):
     def form_multiplier(form_str):
         pts = (form_str.count('W') * 3) + (form_str.count('D') * 1)
@@ -84,7 +87,6 @@ def calculate_momentum_xg(h_stats, a_stats, h_pts, a_pts):
     
     h_mom, a_mom = form_multiplier(h_stats['form']), form_multiplier(a_stats['form'])
     
-    # Puan Gücü Çarpanı (Her 10 puan farkı %10 avantaj/dezavantaj sağlar, Max %30)
     diff = h_pts - a_pts
     h_pts_multiplier = 1.0 + max(min(diff * 0.01, 0.3), -0.3)
     a_pts_multiplier = 1.0 + max(min(-diff * 0.01, 0.3), -0.3)
@@ -112,20 +114,16 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
     if total_xg > 2.2: prob_under_35 *= 0.85 
     return {"1": ms1 * norm, "X": msx * norm, "2": ms2 * norm, "1X": (ms1 + msx) * norm, "X2": (msx + ms2) * norm, "KGV": kg_var * norm, "2.5A": prob_under_25, "2.5U": 100 - prob_under_25, "3.5A": prob_under_35, "3.5U": 100 - prob_under_35}
 
-# V10.48 GÜNCELLEMESİ: Value Trap (Değer Tuzağı) Filtresi Eklendi
 def true_val(odd, pct, is_side_bet=False): 
     if odd <= 0 or pct <= 0: return -1.0
     val = round((odd * (pct/100)) - 1, 2)
-    
-    # Eğer Taraf Bahsi ise ve Value %35'ten fazlaysa, bu büyük ihtimalle bir tuzaktır (Eksik kadro vb.)
     if is_side_bet and val > 0.35:
-        return -0.99 # Tuzak olarak işaretle ve yeşil listeye almasını engelle
-    
+        return -0.99 
     return val
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V10.48 - Anti-Trap Engine")
-st.caption("Puan Gücü Algoritması ve Değer Tuzağı (Value Trap) Filtresi Aktif")
+st.title("⚔️ GMAC V10.49 - Hafızalı Anti-Trap Engine")
+st.caption("Veriler artık kaybolmaz. Excel indirirken ekran sabit kalır.")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -141,6 +139,7 @@ with st.sidebar:
     
     baslat = st.button("🚀 Analizi Başlat", type="primary", use_container_width=True)
 
+# EĞER BUTONA BASILDIYSA ANALİZİ YAP VE HAFIZAYA KAYDET
 if baslat:
     if not api_key:
         st.error("Lütfen sol menüden API Key giriniz!")
@@ -176,7 +175,6 @@ if baslat:
                             a_s = get_stats(lig_id, dep_id, sezon, api_key)
                             
                             if h_s and a_s:
-                                # Yeni Puanlı xG Hesaplaması
                                 ev_xg, dep_xg = calculate_momentum_xg(h_s, a_s, ev_puan, dep_puan)
                                 probs = calculate_hybrid_probabilities(ev_xg, dep_xg)
                                 odds = get_odds(mac['fixture']['id'], api_key)
@@ -199,58 +197,65 @@ if baslat:
                                 })
                         except: pass
                     progress_bar.progress((i + 1) / total_leagues)
-                status.update(label="Tuzak Taraması ve Analiz Tamamlandı!", state="complete", expanded=False)
+                status.update(label="Analiz Tamamlandı ve Hafızaya Alındı!", state="complete", expanded=False)
+                
+                # Verileri hafızaya (session_state) kaydet!
+                if all_excel_data:
+                    st.session_state.analiz_df = pd.DataFrame(all_excel_data)
+                else:
+                    st.session_state.analiz_df = pd.DataFrame() # Boş dataframe
+                    
             except Exception as e:
                 st.error(f"Bir hata oluştu: {e}")
 
-        if all_excel_data:
-            df = pd.DataFrame(all_excel_data)
+# HAFIZADA VERİ VARSA EKRANA YAZDIR (Butona basılmasa bile sayfa yenilendiğinde burası çalışır)
+if st.session_state.analiz_df is not None:
+    df = st.session_state.analiz_df
+    
+    if not df.empty:
+        st.success(f"✅ {len(df)} adet maç analiz edildi. Sonuçlar ekranda.")
+        
+        # --- TELEFONA VE WEB'E ÖZEL KART GÖRÜNÜMÜ ---
+        st.markdown("### 🎯 Güvenli Fırsatlar (Tuzaksız | Value > 0.10 & Olasılık > %50)")
+        
+        for index, row in df.iterrows():
+            firsatlar = []
             
-            st.success(f"✅ {len(df)} adet maç analiz edildi. Değer tuzakları temizlendi.")
+            bahis_tipleri = [
+                ("MS 1", "MS1 %", "VAL MS1", "MS1 Oran"), ("MS X", "MSX %", "VAL MSX", "MSX Oran"), ("MS 2", "MS2 %", "VAL MS2", "MS2 Oran"),
+                ("1X ÇŞ", "1X %", "VAL 1X", "1X Oran"), ("X2 ÇŞ", "X2 %", "VAL X2", "X2 Oran"),
+                ("KG Var", "KG Var %", "VAL KG", "KG Var Oran"),
+                ("2.5 Üst", "2.5 Üst %", "VAL 2.5Ü", "2.5 Üst Oran"), ("2.5 Alt", "2.5 Alt %", "VAL 2.5A", "2.5 Alt Oran"),
+                ("3.5 Üst", "3.5 Üst %", "VAL 3.5Ü", "3.5 Üst Oran"), ("3.5 Alt", "3.5 Alt %", "VAL 3.5A", "3.5 Alt Oran")
+            ]
             
-            # --- TELEFONA VE WEB'E ÖZEL KART GÖRÜNÜMÜ ---
-            st.markdown("### 🎯 Güvenli Fırsatlar (Tuzaksız | Value > 0.10 & Olasılık > %50)")
-            
-            for index, row in df.iterrows():
-                firsatlar = []
-                
-                bahis_tipleri = [
-                    ("MS 1", "MS1 %", "VAL MS1", "MS1 Oran"), ("MS X", "MSX %", "VAL MSX", "MSX Oran"), ("MS 2", "MS2 %", "VAL MS2", "MS2 Oran"),
-                    ("1X ÇŞ", "1X %", "VAL 1X", "1X Oran"), ("X2 ÇŞ", "X2 %", "VAL X2", "X2 Oran"),
-                    ("KG Var", "KG Var %", "VAL KG", "KG Var Oran"),
-                    ("2.5 Üst", "2.5 Üst %", "VAL 2.5Ü", "2.5 Üst Oran"), ("2.5 Alt", "2.5 Alt %", "VAL 2.5A", "2.5 Alt Oran"),
-                    ("3.5 Üst", "3.5 Üst %", "VAL 3.5Ü", "3.5 Üst Oran"), ("3.5 Alt", "3.5 Alt %", "VAL 3.5A", "3.5 Alt Oran")
-                ]
-                
-                for isim, yuzde_col, val_col, oran_col in bahis_tipleri:
-                    # Değerli ve %50 üstü bahisleri bul (Tuzaklanıp -0.99 olanlar otomatik elenecek)
-                    if row[val_col] >= 0.10 and row[yuzde_col] >= 50:
-                        firsatlar.append(f"✅ **{isim}** | %{row[yuzde_col]} | Oran: {row[oran_col]} | **Val: +{row[val_col]}**")
+            for isim, yuzde_col, val_col, oran_col in bahis_tipleri:
+                if row[val_col] >= 0.10 and row[yuzde_col] >= 50:
+                    firsatlar.append(f"✅ **{isim}** | %{row[yuzde_col]} | Oran: {row[oran_col]} | **Val: +{row[val_col]}**")
 
-                if len(firsatlar) > 0:
-                    with st.expander(f"⚽ {row['Ev']} - {row['Dep']}  | 🕒 {row['Saat']}"):
-                        st.caption(f"🏆 {row['Lig']} | Skor: {row['Skor']}")
-                        st.markdown(f"**Puan:** {row['Ev']} ({row['Ev Puan']}p) - {row['Dep']} ({row['Dep Puan']}p)")
-                        st.markdown(f"**Form:** {row['Ev']} ({row['Ev Form']}) - {row['Dep']} ({row['Dep Form']})")
-                        st.divider()
-                        st.markdown("🎯 **Güvenilir Bahisler:**")
-                        for firsat in firsatlar:
-                            st.success(firsat)
+            if len(firsatlar) > 0:
+                with st.expander(f"⚽ {row['Ev']} - {row['Dep']}  | 🕒 {row['Saat']}"):
+                    st.caption(f"🏆 {row['Lig']} | Skor: {row['Skor']}")
+                    st.markdown(f"**Puan:** {row['Ev']} ({row['Ev Puan']}p) - {row['Dep']} ({row['Dep Puan']}p)")
+                    st.markdown(f"**Form:** {row['Ev']} ({row['Ev Form']}) - {row['Dep']} ({row['Dep Form']})")
+                    st.divider()
+                    st.markdown("🎯 **Güvenilir Bahisler:**")
+                    for firsat in firsatlar:
+                        st.success(firsat)
 
-            # Bilgisayar için Excel İndirme Butonu ve Tablo
-            st.divider()
-            st.markdown("### 💻 Tüm Veriler (Detaylı Analiz İçin)")
-            st.dataframe(df)
-            
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
-            
-            st.download_button(
-                label="📥 Tüm Verileri Excel Olarak İndir",
-                data=buffer.getvalue(),
-                file_name=f"GMAC_v10.48_{secim}_{datetime.now().strftime('%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        else:
-            st.warning("Seçilen tarihte taranacak maç bulunamadı.")
+        st.divider()
+        st.markdown("### 💻 Tüm Veriler (Detaylı Analiz İçin)")
+        st.dataframe(df)
+        
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        
+        st.download_button(
+            label="📥 Tüm Verileri Excel Olarak İndir",
+            data=buffer.getvalue(),
+            file_name=f"GMAC_v10.49_{datetime.now().strftime('%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.warning("Seçilen tarihte taranacak maç bulunamadı.")
