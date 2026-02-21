@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V10.49", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V10.50", page_icon="⚔️", layout="wide")
 
 # --- HAFIZA (SESSION STATE) AYARLARI ---
 if "analiz_df" not in st.session_state:
@@ -117,13 +117,20 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
 def true_val(odd, pct, is_side_bet=False): 
     if odd <= 0 or pct <= 0: return -1.0
     val = round((odd * (pct/100)) - 1, 2)
-    if is_side_bet and val > 0.35:
-        return -0.99 
+    if is_side_bet and val > 0.35: return -0.99 
     return val
 
+# V10.50 YENİ: Çeyrek Kelly Kriteri Hesaplaması
+def get_quarter_kelly_pct(odd, pct):
+    if odd <= 1.0 or pct <= 0: return 0.0
+    p = pct / 100.0
+    kelly_fraction = (p * odd - 1) / (odd - 1)
+    if kelly_fraction <= 0: return 0.0
+    return round((kelly_fraction / 4.0) * 100, 1)
+
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V10.49 - Hafızalı Anti-Trap Engine")
-st.caption("Veriler artık kaybolmaz. Excel indirirken ekran sabit kalır.")
+st.title("⚔️ GMAC V10.50 - Keskin Nişancı Modu")
+st.caption("Yalnızca Premium Fırsatlar ve Çeyrek Kelly Kasa Yönetimi Aktif.")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -139,7 +146,6 @@ with st.sidebar:
     
     baslat = st.button("🚀 Analizi Başlat", type="primary", use_container_width=True)
 
-# EĞER BUTONA BASILDIYSA ANALİZİ YAP VE HAFIZAYA KAYDET
 if baslat:
     if not api_key:
         st.error("Lütfen sol menüden API Key giriniz!")
@@ -147,7 +153,7 @@ if baslat:
         all_excel_data = []
         headers = {"x-apisports-key": api_key}
         
-        with st.status("Veriler çekiliyor ve Tuzak Taraması yapılıyor...", expanded=True) as status:
+        with st.status("Veriler çekiliyor ve Premium Taraması yapılıyor...", expanded=True) as status:
             try:
                 resp = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"})
                 valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in resp.json().get('response', []) if i['league']['id'] in TARGET_IDS]
@@ -199,24 +205,22 @@ if baslat:
                     progress_bar.progress((i + 1) / total_leagues)
                 status.update(label="Analiz Tamamlandı ve Hafızaya Alındı!", state="complete", expanded=False)
                 
-                # Verileri hafızaya (session_state) kaydet!
                 if all_excel_data:
                     st.session_state.analiz_df = pd.DataFrame(all_excel_data)
                 else:
-                    st.session_state.analiz_df = pd.DataFrame() # Boş dataframe
+                    st.session_state.analiz_df = pd.DataFrame() 
                     
             except Exception as e:
                 st.error(f"Bir hata oluştu: {e}")
 
-# HAFIZADA VERİ VARSA EKRANA YAZDIR (Butona basılmasa bile sayfa yenilendiğinde burası çalışır)
 if st.session_state.analiz_df is not None:
     df = st.session_state.analiz_df
     
     if not df.empty:
-        st.success(f"✅ {len(df)} adet maç analiz edildi. Sonuçlar ekranda.")
+        st.success(f"✅ {len(df)} maç tarandı. Sadece en güçlü (Keskin Nişancı) eşleşmeler listeleniyor.")
         
-        # --- TELEFONA VE WEB'E ÖZEL KART GÖRÜNÜMÜ ---
-        st.markdown("### 🎯 Güvenli Fırsatlar (Tuzaksız | Value > 0.10 & Olasılık > %50)")
+        st.markdown("### 💎 Keskin Nişancı Fırsatları (Value ≥ 0.12 & Olasılık ≥ %55)")
+        st.info("💡 **Kasa %:** Çeyrek Kelly formülüne göre kasanızın yüzde kaçını bu maça yatırmanız gerektiğini gösterir.")
         
         for index, row in df.iterrows():
             firsatlar = []
@@ -230,8 +234,10 @@ if st.session_state.analiz_df is not None:
             ]
             
             for isim, yuzde_col, val_col, oran_col in bahis_tipleri:
-                if row[val_col] >= 0.10 and row[yuzde_col] >= 50:
-                    firsatlar.append(f"✅ **{isim}** | %{row[yuzde_col]} | Oran: {row[oran_col]} | **Val: +{row[val_col]}**")
+                # KESKİN NİŞANCI FİLTRESİ
+                if row[val_col] >= 0.12 and row[yuzde_col] >= 55:
+                    kelly_stake = get_quarter_kelly_pct(row[oran_col], row[yuzde_col])
+                    firsatlar.append(f"💎 **{isim}** | %{row[yuzde_col]} | Oran: {row[oran_col]} | **Val: +{row[val_col]}** | 💰 **Önerilen Kasa:** %{kelly_stake}")
 
             if len(firsatlar) > 0:
                 with st.expander(f"⚽ {row['Ev']} - {row['Dep']}  | 🕒 {row['Saat']}"):
@@ -239,7 +245,6 @@ if st.session_state.analiz_df is not None:
                     st.markdown(f"**Puan:** {row['Ev']} ({row['Ev Puan']}p) - {row['Dep']} ({row['Dep Puan']}p)")
                     st.markdown(f"**Form:** {row['Ev']} ({row['Ev Form']}) - {row['Dep']} ({row['Dep Form']})")
                     st.divider()
-                    st.markdown("🎯 **Güvenilir Bahisler:**")
                     for firsat in firsatlar:
                         st.success(firsat)
 
@@ -254,7 +259,7 @@ if st.session_state.analiz_df is not None:
         st.download_button(
             label="📥 Tüm Verileri Excel Olarak İndir",
             data=buffer.getvalue(),
-            file_name=f"GMAC_v10.49_{datetime.now().strftime('%H%M')}.xlsx",
+            file_name=f"GMAC_v10.50_KeskinNisanci_{datetime.now().strftime('%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
