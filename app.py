@@ -7,13 +7,11 @@ from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V10.50", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V10.51", page_icon="⚔️", layout="wide")
 
-# --- HAFIZA (SESSION STATE) AYARLARI ---
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
 
-# --- YARDIMCI FONKSİYONLAR ---
 TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 179, 345, 197, 106, 210, 2, 3]
 
 def fix_timezone(date_str):
@@ -102,11 +100,17 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
     for h in range(10):
         for a in range(10):
             p = poisson.pmf(h, ev_xg) * poisson.pmf(a, dep_xg)
+            
+            # V10.51: Beraberlik Düzeltmesi (0-0 ve 1-1 için %15 artış)
+            if h == a and h in [0, 1]:
+                p *= 1.15
+                
             total_prob += p
             if h > a: ms1 += p
             elif h == a: msx += p
             else: ms2 += p
             if h > 0 and a > 0: kg_var += p
+            
     norm = 100.0 / total_prob if total_prob > 0 else 0
     total_xg = ev_xg + dep_xg
     prob_under_25 = poisson.cdf(2, total_xg) * 100
@@ -120,7 +124,6 @@ def true_val(odd, pct, is_side_bet=False):
     if is_side_bet and val > 0.35: return -0.99 
     return val
 
-# V10.50 YENİ: Çeyrek Kelly Kriteri Hesaplaması
 def get_quarter_kelly_pct(odd, pct):
     if odd <= 1.0 or pct <= 0: return 0.0
     p = pct / 100.0
@@ -129,8 +132,8 @@ def get_quarter_kelly_pct(odd, pct):
     return round((kelly_fraction / 4.0) * 100, 1)
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V10.50 - Keskin Nişancı Modu")
-st.caption("Yalnızca Premium Fırsatlar ve Çeyrek Kelly Kasa Yönetimi Aktif.")
+st.title("⚔️ GMAC V10.51 - Dinamik Filtre & Beraberlik Motoru")
+st.caption("Farklı bahis tipleri için farklı filtreler uygulanarak optimum yeşil kartlar hedeflenir.")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -153,7 +156,7 @@ if baslat:
         all_excel_data = []
         headers = {"x-apisports-key": api_key}
         
-        with st.status("Veriler çekiliyor ve Premium Taraması yapılıyor...", expanded=True) as status:
+        with st.status("Veriler çekiliyor ve Dinamik Tarama yapılıyor...", expanded=True) as status:
             try:
                 resp = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"})
                 valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in resp.json().get('response', []) if i['league']['id'] in TARGET_IDS]
@@ -217,10 +220,10 @@ if st.session_state.analiz_df is not None:
     df = st.session_state.analiz_df
     
     if not df.empty:
-        st.success(f"✅ {len(df)} maç tarandı. Sadece en güçlü (Keskin Nişancı) eşleşmeler listeleniyor.")
+        st.success(f"✅ {len(df)} maç tarandı. Dinamik Filtre devrede.")
         
-        st.markdown("### 💎 Keskin Nişancı Fırsatları (Value ≥ 0.12 & Olasılık ≥ %55)")
-        st.info("💡 **Kasa %:** Çeyrek Kelly formülüne göre kasanızın yüzde kaçını bu maça yatırmanız gerektiğini gösterir.")
+        st.markdown("### 💎 Filtrelenmiş Fırsatlar & Kasa Yönetimi")
+        st.info("💡 **Dinamik Kural:** Ana bahislerde Yüksek Value (≥0.12), Yan bahislerde Yüksek İhtimal (≥%65) aranır.")
         
         for index, row in df.iterrows():
             firsatlar = []
@@ -234,10 +237,24 @@ if st.session_state.analiz_df is not None:
             ]
             
             for isim, yuzde_col, val_col, oran_col in bahis_tipleri:
-                # KESKİN NİŞANCI FİLTRESİ
-                if row[val_col] >= 0.12 and row[yuzde_col] >= 55:
-                    kelly_stake = get_quarter_kelly_pct(row[oran_col], row[yuzde_col])
-                    firsatlar.append(f"💎 **{isim}** | %{row[yuzde_col]} | Oran: {row[oran_col]} | **Val: +{row[val_col]}** | 💰 **Önerilen Kasa:** %{kelly_stake}")
+                pct = row[yuzde_col]
+                val = row[val_col]
+                oran = row[oran_col]
+                
+                goster = False
+                
+                # V10.51: DİNAMİK FİLTRELEME MANTIĞI
+                if isim in ["MS 1", "MS 2"]:
+                    if val >= 0.12 and pct >= 55: goster = True
+                elif isim == "MS X":
+                    if val >= 0.15 and pct >= 30: goster = True
+                else: 
+                    # 1X, X2, Alt/Üst ve KG Var için senin sevdiğin eski yeşilleri kurtaran esnek kural
+                    if val >= 0.05 and pct >= 65: goster = True
+
+                if goster:
+                    kelly_stake = get_quarter_kelly_pct(oran, pct)
+                    firsatlar.append(f"🟢 **{isim}** | %{pct} | Oran: {oran} | **Val: +{val}** | 💰 **Kasa:** %{kelly_stake}")
 
             if len(firsatlar) > 0:
                 with st.expander(f"⚽ {row['Ev']} - {row['Dep']}  | 🕒 {row['Saat']}"):
@@ -259,7 +276,7 @@ if st.session_state.analiz_df is not None:
         st.download_button(
             label="📥 Tüm Verileri Excel Olarak İndir",
             data=buffer.getvalue(),
-            file_name=f"GMAC_v10.50_KeskinNisanci_{datetime.now().strftime('%H%M')}.xlsx",
+            file_name=f"GMAC_v10.51_Dinamik_{datetime.now().strftime('%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
