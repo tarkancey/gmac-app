@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V10.51", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V10.52", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
@@ -100,11 +100,7 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
     for h in range(10):
         for a in range(10):
             p = poisson.pmf(h, ev_xg) * poisson.pmf(a, dep_xg)
-            
-            # V10.51: Beraberlik Düzeltmesi (0-0 ve 1-1 için %15 artış)
-            if h == a and h in [0, 1]:
-                p *= 1.15
-                
+            if h == a and h in [0, 1]: p *= 1.15
             total_prob += p
             if h > a: ms1 += p
             elif h == a: msx += p
@@ -132,8 +128,7 @@ def get_quarter_kelly_pct(odd, pct):
     return round((kelly_fraction / 4.0) * 100, 1)
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V10.51 - Dinamik Filtre & Beraberlik Motoru")
-st.caption("Farklı bahis tipleri için farklı filtreler uygulanarak optimum yeşil kartlar hedeflenir.")
+st.title("⚔️ GMAC V10.52 - Liste Görünümü & Dinamik Filtre")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -178,7 +173,7 @@ if baslat:
                             ev_puan, dep_puan = points_map.get(ev_id, 0), points_map.get(dep_id, 0)
                             
                             ms_durumu = mac['fixture']['status']['short']
-                            skor = f"{mac['goals']['home']}-{mac['goals']['away']}" if ms_durumu in ['FT', 'AET', 'PEN'] else ms_durumu
+                            skor = f"{mac['goals']['home']}-{mac['goals']['away']}" if ms_durumu in ['FT', 'AET', 'PEN'] else ("NS" if ms_durumu == "NS" else ms_durumu)
 
                             h_s = get_stats(lig_id, ev_id, sezon, api_key)
                             a_s = get_stats(lig_id, dep_id, sezon, api_key)
@@ -206,7 +201,7 @@ if baslat:
                                 })
                         except: pass
                     progress_bar.progress((i + 1) / total_leagues)
-                status.update(label="Analiz Tamamlandı ve Hafızaya Alındı!", state="complete", expanded=False)
+                status.update(label="Analiz Tamamlandı!", state="complete", expanded=False)
                 
                 if all_excel_data:
                     st.session_state.analiz_df = pd.DataFrame(all_excel_data)
@@ -220,64 +215,94 @@ if st.session_state.analiz_df is not None:
     df = st.session_state.analiz_df
     
     if not df.empty:
-        st.success(f"✅ {len(df)} maç tarandı. Dinamik Filtre devrede.")
+        # FİLTRELENMİŞ LİSTEYİ (TO-DO LIST) OLUŞTURMA
+        value_bets_list = []
         
-        st.markdown("### 💎 Filtrelenmiş Fırsatlar & Kasa Yönetimi")
-        st.info("💡 **Dinamik Kural:** Ana bahislerde Yüksek Value (≥0.12), Yan bahislerde Yüksek İhtimal (≥%65) aranır.")
+        bahis_tipleri = [
+            ("MS 1", "MS1 %", "VAL MS1", "MS1 Oran"), 
+            ("MS X", "MSX %", "VAL MSX", "MSX Oran"), 
+            ("MS 2", "MS2 %", "VAL MS2", "MS2 Oran"),
+            ("1X ÇŞ", "1X %", "VAL 1X", "1X Oran"), 
+            ("X2 ÇŞ", "X2 %", "VAL X2", "X2 Oran"),
+            ("KG Var", "KG Var %", "VAL KG", "KG Var Oran"),
+            ("2.5 Üst", "2.5 Üst %", "VAL 2.5Ü", "2.5 Üst Oran"), 
+            ("2.5 Alt", "2.5 Alt %", "VAL 2.5A", "2.5 Alt Oran"),
+            ("3.5 Üst", "3.5 Üst %", "VAL 3.5Ü", "3.5 Üst Oran"), 
+            ("3.5 Alt", "3.5 Alt %", "VAL 3.5A", "3.5 Alt Oran")
+        ]
         
         for index, row in df.iterrows():
-            firsatlar = []
-            
-            bahis_tipleri = [
-                ("MS 1", "MS1 %", "VAL MS1", "MS1 Oran"), ("MS X", "MSX %", "VAL MSX", "MSX Oran"), ("MS 2", "MS2 %", "VAL MS2", "MS2 Oran"),
-                ("1X ÇŞ", "1X %", "VAL 1X", "1X Oran"), ("X2 ÇŞ", "X2 %", "VAL X2", "X2 Oran"),
-                ("KG Var", "KG Var %", "VAL KG", "KG Var Oran"),
-                ("2.5 Üst", "2.5 Üst %", "VAL 2.5Ü", "2.5 Üst Oran"), ("2.5 Alt", "2.5 Alt %", "VAL 2.5A", "2.5 Alt Oran"),
-                ("3.5 Üst", "3.5 Üst %", "VAL 3.5Ü", "3.5 Üst Oran"), ("3.5 Alt", "3.5 Alt %", "VAL 3.5A", "3.5 Alt Oran")
-            ]
-            
-            for isim, yuzde_col, val_col, oran_col in bahis_tipleri:
+            for tercih, yuzde_col, val_col, oran_col in bahis_tipleri:
                 pct = row[yuzde_col]
                 val = row[val_col]
                 oran = row[oran_col]
                 
                 goster = False
-                
-                # V10.51: DİNAMİK FİLTRELEME MANTIĞI
-                if isim in ["MS 1", "MS 2"]:
+                # Dinamik Filtre 
+                if tercih in ["MS 1", "MS 2"]:
                     if val >= 0.12 and pct >= 55: goster = True
-                elif isim == "MS X":
+                elif tercih == "MS X":
                     if val >= 0.15 and pct >= 30: goster = True
                 else: 
-                    # 1X, X2, Alt/Üst ve KG Var için senin sevdiğin eski yeşilleri kurtaran esnek kural
                     if val >= 0.05 and pct >= 65: goster = True
 
                 if goster:
                     kelly_stake = get_quarter_kelly_pct(oran, pct)
-                    firsatlar.append(f"🟢 **{isim}** | %{pct} | Oran: {oran} | **Val: +{val}** | 💰 **Kasa:** %{kelly_stake}")
+                    value_bets_list.append({
+                        "Tarih": row["Tarih"],
+                        "Saat": row["Saat"],
+                        "Ev": row["Ev"],
+                        "Dep": row["Dep"],
+                        "Skor": row["Skor"],
+                        "1.Tercih": tercih,
+                        "Oran": oran,
+                        "%": pct,
+                        "Value": val,
+                        "Kasa": f"%{kelly_stake}",
+                        "Not": ""
+                    })
 
-            if len(firsatlar) > 0:
-                with st.expander(f"⚽ {row['Ev']} - {row['Dep']}  | 🕒 {row['Saat']}"):
-                    st.caption(f"🏆 {row['Lig']} | Skor: {row['Skor']}")
-                    st.markdown(f"**Puan:** {row['Ev']} ({row['Ev Puan']}p) - {row['Dep']} ({row['Dep Puan']}p)")
-                    st.markdown(f"**Form:** {row['Ev']} ({row['Ev Form']}) - {row['Dep']} ({row['Dep Form']})")
-                    st.divider()
-                    for firsat in firsatlar:
-                        st.success(firsat)
-
-        st.divider()
-        st.markdown("### 💻 Tüm Veriler (Detaylı Analiz İçin)")
-        st.dataframe(df)
+        value_df = pd.DataFrame(value_bets_list)
         
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
+        # EKRANDA GÖSTERİM
+        st.success("✅ Arama tamamlandı! İşte oynanabilir Value bahisleriniz:")
         
-        st.download_button(
-            label="📥 Tüm Verileri Excel Olarak İndir",
-            data=buffer.getvalue(),
-            file_name=f"GMAC_v10.51_Dinamik_{datetime.now().strftime('%H%M')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        if not value_df.empty:
+            st.dataframe(value_df, use_container_width=True, hide_index=True)
+            
+            # EXCEL İNDİRME BUTONLARI YAN YANA
+            col1, col2 = st.columns(2)
+            
+            # 1. Buton: Sadece Value (Ekranda Görünen)
+            buffer_value = io.BytesIO()
+            with pd.ExcelWriter(buffer_value, engine='openpyxl') as writer:
+                value_df.to_excel(writer, index=False)
+            
+            with col1:
+                st.download_button(
+                    label="💎 Yalnızca Valueli Maçları İndir",
+                    data=buffer_value.getvalue(),
+                    file_name=f"GMAC_Value_Liste_{datetime.now().strftime('%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    type="primary"
+                )
+            
+            # 2. Buton: Tüm Analiz (Eski Sistem)
+            buffer_all = io.BytesIO()
+            with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+                
+            with col2:
+                st.download_button(
+                    label="📥 Tüm Verileri Excel Olarak İndir (Arka Plan)",
+                    data=buffer_all.getvalue(),
+                    file_name=f"GMAC_TumVeri_{datetime.now().strftime('%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        else:
+            st.warning("Filtrelere takılan hiçbir Value maç bulunamadı.")
+            
     else:
         st.warning("Seçilen tarihte taranacak maç bulunamadı.")
