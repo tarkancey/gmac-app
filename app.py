@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V10.52", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V10.53", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
@@ -20,7 +20,7 @@ def fix_timezone(date_str):
         dt_obj = datetime.fromisoformat(date_str)
         tr_zone = timezone(timedelta(hours=3))
         dt_tr = dt_obj.astimezone(tr_zone)
-        return dt_tr.strftime("%d.%m.%Y"), dt_tr.strftime("%H:%M")
+        return dt_tr.strftime("%Y-%m-%d"), dt_tr.strftime("%H:%M") # Tarih formatı sıralama için YYYY-MM-DD yapıldı, ekranda düzeltilecek
     except: return date_str[:10], date_str[11:16]
 
 @st.cache_data(ttl=3600)
@@ -128,7 +128,7 @@ def get_quarter_kelly_pct(odd, pct):
     return round((kelly_fraction / 4.0) * 100, 1)
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V10.52 - Liste Görünümü & Dinamik Filtre")
+st.title("⚔️ GMAC V10.53 - Zaman Sıralamalı Liste Görünümü")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -183,8 +183,11 @@ if baslat:
                                 probs = calculate_hybrid_probabilities(ev_xg, dep_xg)
                                 odds = get_odds(mac['fixture']['id'], api_key)
                                 
+                                # Tarihi ekranda güzel göstermek için formatı burada TR standartlarına (DD.MM.YYYY) çeviriyoruz
+                                tr_tarih_gosterim = datetime.strptime(tr_tarih, "%Y-%m-%d").strftime("%d.%m.%Y")
+                                
                                 all_excel_data.append({
-                                    "Tarih": tr_tarih, "Saat": saat, "Lig": mac['league']['name'],
+                                    "Tarih": tr_tarih_gosterim, "Sort_Tarih": tr_tarih, "Saat": saat, "Lig": mac['league']['name'],
                                     "Ev": ev_ad, "Ev Form": h_s['form'], "Ev Puan": ev_puan,
                                     "Dep": dep_ad, "Dep Form": a_s['form'], "Dep Puan": dep_puan,
                                     "Skor": skor, "Ev xG": round(ev_xg, 2), "Dep xG": round(dep_xg, 2),
@@ -204,7 +207,11 @@ if baslat:
                 status.update(label="Analiz Tamamlandı!", state="complete", expanded=False)
                 
                 if all_excel_data:
-                    st.session_state.analiz_df = pd.DataFrame(all_excel_data)
+                    temp_df = pd.DataFrame(all_excel_data)
+                    # V10.53 SIRALAMA (Tarih -> Saat -> Ev Sahibi)
+                    temp_df = temp_df.sort_values(by=["Sort_Tarih", "Saat", "Ev"], ascending=[True, True, True]).reset_index(drop=True)
+                    temp_df = temp_df.drop(columns=["Sort_Tarih"]) # Gizli sıralama sütununu temizle
+                    st.session_state.analiz_df = temp_df
                 else:
                     st.session_state.analiz_df = pd.DataFrame() 
                     
@@ -265,7 +272,7 @@ if st.session_state.analiz_df is not None:
         value_df = pd.DataFrame(value_bets_list)
         
         # EKRANDA GÖSTERİM
-        st.success("✅ Arama tamamlandı! İşte oynanabilir Value bahisleriniz:")
+        st.success("✅ Arama tamamlandı! Maç saatine göre sıralı Value listeniz hazır:")
         
         if not value_df.empty:
             st.dataframe(value_df, use_container_width=True, hide_index=True)
