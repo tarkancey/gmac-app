@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V10.53", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V10.54", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
@@ -20,7 +20,7 @@ def fix_timezone(date_str):
         dt_obj = datetime.fromisoformat(date_str)
         tr_zone = timezone(timedelta(hours=3))
         dt_tr = dt_obj.astimezone(tr_zone)
-        return dt_tr.strftime("%Y-%m-%d"), dt_tr.strftime("%H:%M") # Tarih formatı sıralama için YYYY-MM-DD yapıldı, ekranda düzeltilecek
+        return dt_tr.strftime("%Y-%m-%d"), dt_tr.strftime("%H:%M") 
     except: return date_str[:10], date_str[11:16]
 
 @st.cache_data(ttl=3600)
@@ -128,7 +128,7 @@ def get_quarter_kelly_pct(odd, pct):
     return round((kelly_fraction / 4.0) * 100, 1)
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V10.53 - Zaman Sıralamalı Liste Görünümü")
+st.title("⚔️ GMAC V10.54 - İki Kademeli Value & Banko Sistemi")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -151,7 +151,7 @@ if baslat:
         all_excel_data = []
         headers = {"x-apisports-key": api_key}
         
-        with st.status("Veriler çekiliyor ve Dinamik Tarama yapılıyor...", expanded=True) as status:
+        with st.status("Veriler çekiliyor ve Çift Kademeli Tarama yapılıyor...", expanded=True) as status:
             try:
                 resp = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"})
                 valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in resp.json().get('response', []) if i['league']['id'] in TARGET_IDS]
@@ -183,7 +183,6 @@ if baslat:
                                 probs = calculate_hybrid_probabilities(ev_xg, dep_xg)
                                 odds = get_odds(mac['fixture']['id'], api_key)
                                 
-                                # Tarihi ekranda güzel göstermek için formatı burada TR standartlarına (DD.MM.YYYY) çeviriyoruz
                                 tr_tarih_gosterim = datetime.strptime(tr_tarih, "%Y-%m-%d").strftime("%d.%m.%Y")
                                 
                                 all_excel_data.append({
@@ -208,9 +207,8 @@ if baslat:
                 
                 if all_excel_data:
                     temp_df = pd.DataFrame(all_excel_data)
-                    # V10.53 SIRALAMA (Tarih -> Saat -> Ev Sahibi)
                     temp_df = temp_df.sort_values(by=["Sort_Tarih", "Saat", "Ev"], ascending=[True, True, True]).reset_index(drop=True)
-                    temp_df = temp_df.drop(columns=["Sort_Tarih"]) # Gizli sıralama sütununu temizle
+                    temp_df = temp_df.drop(columns=["Sort_Tarih"])
                     st.session_state.analiz_df = temp_df
                 else:
                     st.session_state.analiz_df = pd.DataFrame() 
@@ -222,7 +220,6 @@ if st.session_state.analiz_df is not None:
     df = st.session_state.analiz_df
     
     if not df.empty:
-        # FİLTRELENMİŞ LİSTEYİ (TO-DO LIST) OLUŞTURMA
         value_bets_list = []
         
         bahis_tipleri = [
@@ -245,19 +242,33 @@ if st.session_state.analiz_df is not None:
                 oran = row[oran_col]
                 
                 goster = False
-                # Dinamik Filtre 
+                kategori = ""
+                
+                # V10.54: ÇİFT KADEMELİ MANTIK (Value vs Banko)
                 if tercih in ["MS 1", "MS 2"]:
-                    if val >= 0.12 and pct >= 55: goster = True
+                    if val >= 0.12 and pct >= 55: 
+                        goster, kategori = True, "🟢 Value"
+                    elif pct >= 60: 
+                        goster, kategori = True, "🟠 Banko"
                 elif tercih == "MS X":
-                    if val >= 0.15 and pct >= 30: goster = True
+                    if val >= 0.15 and pct >= 30: 
+                        goster, kategori = True, "🟢 Value"
+                    # Beraberlik için Banko (Turuncu) ihtimali aranmaz, çok risklidir.
                 else: 
-                    if val >= 0.05 and pct >= 65: goster = True
+                    # 1X, X2, Alt/Üst, KG Var
+                    if val >= 0.05 and pct >= 65: 
+                        goster, kategori = True, "🟢 Value"
+                    elif pct >= 70: 
+                        goster, kategori = True, "🟠 Banko"
 
                 if goster:
                     kelly_stake = get_quarter_kelly_pct(oran, pct)
+                    kasa_metni = f"%{kelly_stake}" if kategori == "🟢 Value" else "Kombine"
+                    
                     value_bets_list.append({
                         "Tarih": row["Tarih"],
                         "Saat": row["Saat"],
+                        "Kategori": kategori,
                         "Ev": row["Ev"],
                         "Dep": row["Dep"],
                         "Skor": row["Skor"],
@@ -265,37 +276,34 @@ if st.session_state.analiz_df is not None:
                         "Oran": oran,
                         "%": pct,
                         "Value": val,
-                        "Kasa": f"%{kelly_stake}",
+                        "Kasa": kasa_metni,
                         "Not": ""
                     })
 
         value_df = pd.DataFrame(value_bets_list)
         
         # EKRANDA GÖSTERİM
-        st.success("✅ Arama tamamlandı! Maç saatine göre sıralı Value listeniz hazır:")
+        st.success("✅ Arama tamamlandı! 🟢 Value (Tekli) ve 🟠 Banko (Kombine) maçlarınız hazır:")
         
         if not value_df.empty:
             st.dataframe(value_df, use_container_width=True, hide_index=True)
             
-            # EXCEL İNDİRME BUTONLARI YAN YANA
             col1, col2 = st.columns(2)
             
-            # 1. Buton: Sadece Value (Ekranda Görünen)
             buffer_value = io.BytesIO()
             with pd.ExcelWriter(buffer_value, engine='openpyxl') as writer:
                 value_df.to_excel(writer, index=False)
             
             with col1:
                 st.download_button(
-                    label="💎 Yalnızca Valueli Maçları İndir",
+                    label="💎 Filtrelenmiş Listeyi İndir (Yeşil & Turuncu)",
                     data=buffer_value.getvalue(),
-                    file_name=f"GMAC_Value_Liste_{datetime.now().strftime('%H%M')}.xlsx",
+                    file_name=f"GMAC_Value_ve_Banko_{datetime.now().strftime('%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                     type="primary"
                 )
             
-            # 2. Buton: Tüm Analiz (Eski Sistem)
             buffer_all = io.BytesIO()
             with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False)
@@ -309,7 +317,7 @@ if st.session_state.analiz_df is not None:
                     use_container_width=True
                 )
         else:
-            st.warning("Filtrelere takılan hiçbir Value maç bulunamadı.")
+            st.warning("Filtrelere takılan hiçbir maç bulunamadı.")
             
     else:
         st.warning("Seçilen tarihte taranacak maç bulunamadı.")
