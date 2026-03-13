@@ -2,17 +2,17 @@ import streamlit as st
 import requests
 from scipy.stats import poisson
 import pandas as pd
-import math
 from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V10.54", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V11.0", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
 
-TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 179, 345, 197, 106, 210, 2, 3]
+# Ligler Eklendi: 218 (Avusturya), 207 (İsviçre), 848 (Konferans Ligi)
+TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 179, 345, 197, 106, 210, 2, 3, 218, 207, 848]
 
 def fix_timezone(date_str):
     try:
@@ -40,7 +40,7 @@ def get_matches_range(lig_id, season_year, start_date, end_date, api_key):
 def get_odds(fixture_id, api_key):
     headers = {"x-apisports-key": api_key}
     url = "https://v3.football.api-sports.io/odds"
-    odds_pool = {"MS1": [], "MSX": [], "MS2": [], "1X": [], "X2": [], "2.5U": [], "2.5A": [], "3.5U": [], "3.5A": [], "KGV": []}
+    odds_pool = {"MS1": [], "MSX": [], "MS2": [], "2.5U": [], "2.5A": [], "3.5U": [], "3.5A": [], "KGV": []}
     try:
         data = requests.get(url, headers=headers, params={"fixture": fixture_id}).json().get('response', [])
         if data:
@@ -51,10 +51,6 @@ def get_odds(fixture_id, api_key):
                             if v['value'] == "Home": odds_pool["MS1"].append(float(v['odd']))
                             elif v['value'] == "Draw": odds_pool["MSX"].append(float(v['odd']))
                             elif v['value'] == "Away": odds_pool["MS2"].append(float(v['odd']))
-                    elif bet['id'] == 12: 
-                        for v in bet['values']:
-                            if v['value'] == "Home/Draw": odds_pool["1X"].append(float(v['odd']))
-                            elif v['value'] == "Draw/Away": odds_pool["X2"].append(float(v['odd']))
                     elif bet['id'] == 5: 
                         for v in bet['values']:
                             if v['value'] == "Over 2.5": odds_pool["2.5U"].append(float(v['odd']))
@@ -66,10 +62,7 @@ def get_odds(fixture_id, api_key):
                             if v['value'] == "Yes": odds_pool["KGV"].append(float(v['odd']))
     except: pass
     
-    final_odds = {k: round(sum(v)/len(v), 2) if v else 0 for k, v in odds_pool.items()}
-    if final_odds["1X"] == 0 and final_odds["MS1"] > 0 and final_odds["MSX"] > 0: final_odds["1X"] = round((final_odds["MS1"] * final_odds["MSX"]) / (final_odds["MS1"] + final_odds["MSX"]), 2)
-    if final_odds["X2"] == 0 and final_odds["MS2"] > 0 and final_odds["MSX"] > 0: final_odds["X2"] = round((final_odds["MS2"] * final_odds["MSX"]) / (final_odds["MS2"] + final_odds["MSX"]), 2)
-    return final_odds
+    return {k: round(sum(v)/len(v), 2) if v else 0 for k, v in odds_pool.items()}
 
 def get_stats(lig_id, team_id, season_year, api_key):
     headers = {"x-apisports-key": api_key}
@@ -77,6 +70,37 @@ def get_stats(lig_id, team_id, season_year, api_key):
         s = requests.get("https://v3.football.api-sports.io/teams/statistics", headers=headers, params={"league": lig_id, "team": team_id, "season": season_year}).json().get('response')
         return {"form": s.get('form', "")[-5:], "hf": float(s['goals']['for']['average']['home']), "ha": float(s['goals']['against']['average']['home']), "af": float(s['goals']['for']['average']['away']), "aa": float(s['goals']['against']['average']['away'])} if s else None
     except: return None
+
+def get_h2h(ev_id, dep_id, api_key):
+    # Aralarındaki son 5 maçı bulup Ev Sahibi gözünden W-D-L (Galibiyet-Beraberlik-Mağlubiyet) hesaplar
+    headers = {"x-apisports-key": api_key}
+    try:
+        resp = requests.get("https://v3.football.api-sports.io/fixtures/headtohead", headers=headers, params={"h2h": f"{ev_id}-{dep_id}", "last": 5}).json().get('response', [])
+        w, d, l = 0, 0, 0
+        for match in resp:
+            if match['fixture']['status']['short'] in ['FT', 'AET', 'PEN']:
+                h_goals = match['goals']['home']
+                a_goals = match['goals']['away']
+                if h_goals == a_goals:
+                    d += 1
+                elif (match['teams']['home']['id'] == ev_id and h_goals > a_goals) or (match['teams']['away']['id'] == ev_id and a_goals > h_goals):
+                    w += 1
+                else:
+                    l += 1
+        return f"{w}-{d}-{l}"
+    except:
+        return "0-0-0"
+
+def get_injuries(fixture_id, ev_id, dep_id, api_key):
+    # O maça ait sakat/cezalı oyuncu sayısını çeker
+    headers = {"x-apisports-key": api_key}
+    try:
+        resp = requests.get("https://v3.football.api-sports.io/injuries", headers=headers, params={"fixture": fixture_id}).json().get('response', [])
+        ev_eksik = sum(1 for p in resp if p['team']['id'] == ev_id)
+        dep_eksik = sum(1 for p in resp if p['team']['id'] == dep_id)
+        return ev_eksik, dep_eksik
+    except:
+        return 0, 0
 
 def calculate_momentum_xg(h_stats, a_stats, h_pts, a_pts):
     def form_multiplier(form_str):
@@ -112,23 +136,10 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
     prob_under_25 = poisson.cdf(2, total_xg) * 100
     prob_under_35 = poisson.cdf(3, total_xg) * 100
     if total_xg > 2.2: prob_under_35 *= 0.85 
-    return {"1": ms1 * norm, "X": msx * norm, "2": ms2 * norm, "1X": (ms1 + msx) * norm, "X2": (msx + ms2) * norm, "KGV": kg_var * norm, "2.5A": prob_under_25, "2.5U": 100 - prob_under_25, "3.5A": prob_under_35, "3.5U": 100 - prob_under_35}
-
-def true_val(odd, pct, is_side_bet=False): 
-    if odd <= 0 or pct <= 0: return -1.0
-    val = round((odd * (pct/100)) - 1, 2)
-    if is_side_bet and val > 0.35: return -0.99 
-    return val
-
-def get_quarter_kelly_pct(odd, pct):
-    if odd <= 1.0 or pct <= 0: return 0.0
-    p = pct / 100.0
-    kelly_fraction = (p * odd - 1) / (odd - 1)
-    if kelly_fraction <= 0: return 0.0
-    return round((kelly_fraction / 4.0) * 100, 1)
+    return {"1": ms1 * norm, "X": msx * norm, "2": ms2 * norm, "KGV": kg_var * norm, "2.5A": prob_under_25, "2.5U": 100 - prob_under_25, "3.5A": prob_under_35, "3.5U": 100 - prob_under_35}
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V10.54 - İki Kademeli Value & Banko Sistemi")
+st.title("⚔️ GMAC V11.0 - H2H ve Eksik Oyuncu Entegrasyonu")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -142,7 +153,7 @@ with st.sidebar:
     secim = st.radio("Taramak İstediğiniz Gün:", ["Bugün", "Yarın"])
     hedef_tarih = bugun_str if secim == "Bugün" else yarin_str
     
-    baslat = st.button("🚀 Analizi Başlat", type="primary", use_container_width=True)
+    baslat = st.button("🚀 Analizi Başlat", type="primary")
 
 if baslat:
     if not api_key:
@@ -151,7 +162,7 @@ if baslat:
         all_excel_data = []
         headers = {"x-apisports-key": api_key}
         
-        with st.status("Veriler çekiliyor ve Çift Kademeli Tarama yapılıyor...", expanded=True) as status:
+        with st.status("Veriler çekiliyor. H2H ve Eksikler analiz ediliyor...", expanded=True) as status:
             try:
                 resp = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"})
                 valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in resp.json().get('response', []) if i['league']['id'] in TARGET_IDS]
@@ -165,10 +176,12 @@ if baslat:
                     
                     for mac in maclar:
                         try:
+                            fix_id = mac['fixture']['id']
                             tr_tarih, saat = fix_timezone(mac['fixture']['date'])
                             ev_ad, dep_ad = mac['teams']['home']['name'], mac['teams']['away']['name']
                             ev_id, dep_id, lig_id, sezon = mac['teams']['home']['id'], mac['teams']['away']['id'], mac['league']['id'], mac['league']['season']
                             
+                            # Puanları hesaplama için çekiyoruz ancak Excel'e yansıtmayacağız
                             points_map = get_league_standings(lig_id, sezon, api_key)
                             ev_puan, dep_puan = points_map.get(ev_id, 0), points_map.get(dep_id, 0)
                             
@@ -179,29 +192,43 @@ if baslat:
                             a_s = get_stats(lig_id, dep_id, sezon, api_key)
                             
                             if h_s and a_s:
+                                # Eksikler ve H2H
+                                ev_eksik, dep_eksik = get_injuries(fix_id, ev_id, dep_id, api_key)
+                                h2h_str = get_h2h(ev_id, dep_id, api_key)
+                                
                                 ev_xg, dep_xg = calculate_momentum_xg(h_s, a_s, ev_puan, dep_puan)
                                 probs = calculate_hybrid_probabilities(ev_xg, dep_xg)
-                                odds = get_odds(mac['fixture']['id'], api_key)
+                                odds = get_odds(fix_id, api_key)
                                 
                                 tr_tarih_gosterim = datetime.strptime(tr_tarih, "%Y-%m-%d").strftime("%d.%m.%Y")
                                 
+                                # Görseldeki formata birebir uyan Sözlük Yapısı
                                 all_excel_data.append({
-                                    "Tarih": tr_tarih_gosterim, "Sort_Tarih": tr_tarih, "Saat": saat, "Lig": mac['league']['name'],
-                                    "Ev": ev_ad, "Ev Form": h_s['form'], "Ev Puan": ev_puan,
-                                    "Dep": dep_ad, "Dep Form": a_s['form'], "Dep Puan": dep_puan,
-                                    "Skor": skor, "Ev xG": round(ev_xg, 2), "Dep xG": round(dep_xg, 2),
-                                    "MS1 Oran": odds["MS1"], "MS1 %": round(probs['1']), "VAL MS1": true_val(odds["MS1"], probs['1'], True),
-                                    "MSX Oran": odds["MSX"], "MSX %": round(probs['X']), "VAL MSX": true_val(odds["MSX"], probs['X'], True),
-                                    "MS2 Oran": odds["MS2"], "MS2 %": round(probs['2']), "VAL MS2": true_val(odds["MS2"], probs['2'], True),
-                                    "1X Oran": odds["1X"], "1X %": round(probs['1X']), "VAL 1X": true_val(odds["1X"], probs['1X'], True),
-                                    "X2 Oran": odds["X2"], "X2 %": round(probs['X2']), "VAL X2": true_val(odds["X2"], probs['X2'], True),
-                                    "KG Var Oran": odds["KGV"], "KG Var %": round(probs['KGV']), "VAL KG": true_val(odds["KGV"], probs['KGV']),
-                                    "2.5 Üst Oran": odds["2.5U"], "2.5 Üst %": round(probs['2.5U']), "VAL 2.5Ü": true_val(odds["2.5U"], probs['2.5U']),
-                                    "2.5 Alt Oran": odds["2.5A"], "2.5 Alt %": round(probs['2.5A']), "VAL 2.5A": true_val(odds["2.5A"], probs['2.5A']),
-                                    "3.5 Üst Oran": odds["3.5U"], "3.5 Üst %": round(probs['3.5U']), "VAL 3.5Ü": true_val(odds["3.5U"], probs['3.5U']),
-                                    "3.5 Alt Oran": odds["3.5A"], "3.5 Alt %": round(probs['3.5A']), "VAL 3.5A": true_val(odds["3.5A"], probs['3.5A'])
+                                    "Tarih": tr_tarih_gosterim, 
+                                    "Sort_Tarih": tr_tarih, 
+                                    "Saat": saat, 
+                                    "Lig": mac['league']['name'],
+                                    "Ev": ev_ad, 
+                                    "Dep": dep_ad, 
+                                    "Skor": skor, 
+                                    "Ev Eksik": ev_eksik,
+                                    "Dep Eksik": dep_eksik,
+                                    "Ev xG": round(ev_xg, 2), 
+                                    "Dep xG": round(dep_xg, 2),
+                                    "Ev Form": h_s['form'], 
+                                    "Dep Form": a_s['form'], 
+                                    "H2H W-D-L": h2h_str,
+                                    "MS1 Oran": odds["MS1"], "MS1 %": round(probs['1']), 
+                                    "MSX Oran": odds["MSX"], "MSX %": round(probs['X']), 
+                                    "MS2 Oran": odds["MS2"], "MS2 %": round(probs['2']), 
+                                    "KG Var Oran": odds["KGV"], "KG Var %": round(probs['KGV']), 
+                                    "2.5Ü Oran": odds["2.5U"], "2.5Ü %": round(probs['2.5U']), 
+                                    "2.5A Oran": odds["2.5A"], "2.5A %": round(probs['2.5A']), 
+                                    "3.5Ü Oran": odds["3.5U"], "3.5Ü %": round(probs['3.5U']), 
+                                    "3.5A Oran": odds["3.5A"], "3.5A %": round(probs['3.5A'])
                                 })
-                        except: pass
+                        except Exception as e: 
+                            pass # Maç atla
                     progress_bar.progress((i + 1) / total_leagues)
                 status.update(label="Analiz Tamamlandı!", state="complete", expanded=False)
                 
@@ -220,104 +247,20 @@ if st.session_state.analiz_df is not None:
     df = st.session_state.analiz_df
     
     if not df.empty:
-        value_bets_list = []
+        st.success("✅ Analiz tamamlandı! Tüm verileriniz hazır:")
         
-        bahis_tipleri = [
-            ("MS 1", "MS1 %", "VAL MS1", "MS1 Oran"), 
-            ("MS X", "MSX %", "VAL MSX", "MSX Oran"), 
-            ("MS 2", "MS2 %", "VAL MS2", "MS2 Oran"),
-            ("1X ÇŞ", "1X %", "VAL 1X", "1X Oran"), 
-            ("X2 ÇŞ", "X2 %", "VAL X2", "X2 Oran"),
-            ("KG Var", "KG Var %", "VAL KG", "KG Var Oran"),
-            ("2.5 Üst", "2.5 Üst %", "VAL 2.5Ü", "2.5 Üst Oran"), 
-            ("2.5 Alt", "2.5 Alt %", "VAL 2.5A", "2.5 Alt Oran"),
-            ("3.5 Üst", "3.5 Üst %", "VAL 3.5Ü", "3.5 Üst Oran"), 
-            ("3.5 Alt", "3.5 Alt %", "VAL 3.5A", "3.5 Alt Oran")
-        ]
+        st.dataframe(df, use_container_width=True, hide_index=True)
         
-        for index, row in df.iterrows():
-            for tercih, yuzde_col, val_col, oran_col in bahis_tipleri:
-                pct = row[yuzde_col]
-                val = row[val_col]
-                oran = row[oran_col]
-                
-                goster = False
-                kategori = ""
-                
-                # V10.54: ÇİFT KADEMELİ MANTIK (Value vs Banko)
-                if tercih in ["MS 1", "MS 2"]:
-                    if val >= 0.12 and pct >= 55: 
-                        goster, kategori = True, "🟢 Value"
-                    elif pct >= 60: 
-                        goster, kategori = True, "🟠 Banko"
-                elif tercih == "MS X":
-                    if val >= 0.15 and pct >= 30: 
-                        goster, kategori = True, "🟢 Value"
-                    # Beraberlik için Banko (Turuncu) ihtimali aranmaz, çok risklidir.
-                else: 
-                    # 1X, X2, Alt/Üst, KG Var
-                    if val >= 0.05 and pct >= 65: 
-                        goster, kategori = True, "🟢 Value"
-                    elif pct >= 70: 
-                        goster, kategori = True, "🟠 Banko"
-
-                if goster:
-                    kelly_stake = get_quarter_kelly_pct(oran, pct)
-                    kasa_metni = f"%{kelly_stake}" if kategori == "🟢 Value" else "Kombine"
-                    
-                    value_bets_list.append({
-                        "Tarih": row["Tarih"],
-                        "Saat": row["Saat"],
-                        "Kategori": kategori,
-                        "Ev": row["Ev"],
-                        "Dep": row["Dep"],
-                        "Skor": row["Skor"],
-                        "1.Tercih": tercih,
-                        "Oran": oran,
-                        "%": pct,
-                        "Value": val,
-                        "Kasa": kasa_metni,
-                        "Not": ""
-                    })
-
-        value_df = pd.DataFrame(value_bets_list)
-        
-        # EKRANDA GÖSTERİM
-        st.success("✅ Arama tamamlandı! 🟢 Value (Tekli) ve 🟠 Banko (Kombine) maçlarınız hazır:")
-        
-        if not value_df.empty:
-            st.dataframe(value_df, use_container_width=True, hide_index=True)
+        buffer_all = io.BytesIO()
+        with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
             
-            col1, col2 = st.columns(2)
-            
-            buffer_value = io.BytesIO()
-            with pd.ExcelWriter(buffer_value, engine='openpyxl') as writer:
-                value_df.to_excel(writer, index=False)
-            
-            with col1:
-                st.download_button(
-                    label="💎 Filtrelenmiş Listeyi İndir (Yeşil & Turuncu)",
-                    data=buffer_value.getvalue(),
-                    file_name=f"GMAC_Value_ve_Banko_{datetime.now().strftime('%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    type="primary"
-                )
-            
-            buffer_all = io.BytesIO()
-            with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
-                
-            with col2:
-                st.download_button(
-                    label="📥 Tüm Verileri Excel Olarak İndir (Arka Plan)",
-                    data=buffer_all.getvalue(),
-                    file_name=f"GMAC_TumVeri_{datetime.now().strftime('%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-        else:
-            st.warning("Filtrelere takılan hiçbir maç bulunamadı.")
-            
+        st.download_button(
+            label="📥 Sadeleştirilmiş Tabloyu Excel Olarak İndir",
+            data=buffer_all.getvalue(),
+            file_name=f"GMAC_Analiz_{datetime.now().strftime('%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
     else:
         st.warning("Seçilen tarihte taranacak maç bulunamadı.")
