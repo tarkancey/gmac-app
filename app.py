@@ -144,7 +144,7 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
     }
 
 def calc_value(prob, odd):
-    # Gerçek Value Formülü
+    # DÜZELTİLDİ: Fonksiyon adı calc_value
     if odd == 0.0 or prob == 0.0: return 0.0
     return round(((prob / 100.0) * odd) - 1, 2)
 
@@ -219,6 +219,7 @@ if baslat:
                                 
                                 tr_tarih_gosterim = datetime.strptime(tr_tarih, "%Y-%m-%d").strftime("%d.%m.%Y")
                                 
+                                # DÜZELTİLDİ: Fonksiyon adları burada calc_value olarak değiştirildi.
                                 all_excel_data.append({
                                     "Tarih": tr_tarih_gosterim, "Sort_Tarih": tr_tarih, "Saat": saat, "Lig": mac['league']['name'],
                                     "Ev": ev_ad, "Dep": dep_ad, "Skor": skor, 
@@ -226,16 +227,16 @@ if baslat:
                                     "Ev xG": round(ev_xg, 2), "Dep xG": round(dep_xg, 2),
                                     "Ev Form": h_s['form'], "Dep Form": a_s['form'], "H2H W-D-L": h2h_str,
                                     
-                                    "MS1 Oran": odds["MS1"], "MS1 %": round(probs['1']), "MS1 VAL": calc_val(probs['1'], odds["MS1"]),
-                                    "MSX Oran": odds["MSX"], "MSX %": round(probs['X']), "MSX VAL": calc_val(probs['X'], odds["MSX"]),
-                                    "MS2 Oran": odds["MS2"], "MS2 %": round(probs['2']), "MS2 VAL": calc_val(probs['2'], odds["MS2"]),
+                                    "MS1 Oran": odds["MS1"], "MS1 %": round(probs['1']), "MS1 VAL": calc_value(probs['1'], odds["MS1"]),
+                                    "MSX Oran": odds["MSX"], "MSX %": round(probs['X']), "MSX VAL": calc_value(probs['X'], odds["MSX"]),
+                                    "MS2 Oran": odds["MS2"], "MS2 %": round(probs['2']), "MS2 VAL": calc_value(probs['2'], odds["MS2"]),
                                     
-                                    "KG Var Oran": odds["KGV"], "KG Var %": round(probs['KGV']), "KGV VAL": calc_val(probs['KGV'], odds["KGV"]),
+                                    "KG Var Oran": odds["KGV"], "KG Var %": round(probs['KGV']), "KGV VAL": calc_value(probs['KGV'], odds["KGV"]),
                                     
-                                    "2.5Ü Oran": odds["2.5U"], "2.5Ü %": round(probs['2.5U']), "2.5Ü VAL": calc_val(probs['2.5U'], odds["2.5U"]),
-                                    "2.5A Oran": odds["2.5A"], "2.5A %": round(probs['2.5A']), "2.5A VAL": calc_val(probs['2.5A'], odds["2.5A"]),
-                                    "3.5Ü Oran": odds["3.5U"], "3.5Ü %": round(probs['3.5U']), "3.5Ü VAL": calc_val(probs['3.5U'], odds["3.5U"]),
-                                    "3.5A Oran": odds["3.5A"], "3.5A %": round(probs['3.5A']), "3.5A VAL": calc_val(probs['3.5A'], odds["3.5A"])
+                                    "2.5Ü Oran": odds["2.5U"], "2.5Ü %": round(probs['2.5U']), "2.5Ü VAL": calc_value(probs['2.5U'], odds["2.5U"]),
+                                    "2.5A Oran": odds["2.5A"], "2.5A %": round(probs['2.5A']), "2.5A VAL": calc_value(probs['2.5A'], odds["2.5A"]),
+                                    "3.5Ü Oran": odds["3.5U"], "3.5Ü %": round(probs['3.5U']), "3.5Ü VAL": calc_value(probs['3.5U'], odds["3.5U"]),
+                                    "3.5A Oran": odds["3.5A"], "3.5A %": round(probs['3.5A']), "3.5A VAL": calc_value(probs['3.5A'], odds["3.5A"])
                                 })
                         except Exception as e: 
                             pass
