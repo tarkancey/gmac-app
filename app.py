@@ -4,10 +4,9 @@ from scipy.stats import poisson
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import io
-from openpyxl.styles import PatternFill
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V11.01 - Renk Kodlu Value Sistemi", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V11.02 - Renk Kodlu Value Sistemi", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
@@ -170,13 +169,13 @@ def calc_value(prob, odd):
 def color_value(val):
     if isinstance(val, (int, float)):
         if val >= 0.05:
-            return 'background-color: #c6efce; color: #006100;' # Yeşil
+            return 'background-color: #c6efce; color: #006100;' # Açık Yeşil arka plan, Koyu Yeşil yazı
         elif val <= -0.15:
-            return 'background-color: #ffc7ce; color: #9c0006;' # Kırmızı
+            return 'background-color: #ffc7ce; color: #9c0006;' # Açık Kırmızı arka plan, Koyu Kırmızı yazı
     return ''
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V11.01 - Limit Korumalı Renk Kodlu Value")
+st.title("⚔️ GMAC V11.02 - Tam Renkli Excel Çıktısı")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -283,37 +282,32 @@ if st.session_state.analiz_df is not None:
     if not df.empty:
         st.success("✅ Analiz tamamlandı! Yeşille işaretlenmiş değerleri öncelikli olarak değerlendirebilirsiniz.")
         
-        # Sadece VAL yazan sütunları renklendir (Streamlit ekranı için)
+        # Sadece VAL yazan sütunları bul
         val_columns = [col for col in df.columns if 'VAL' in col]
+        
+        # DataFrame'e Stilleri Uygula
         styled_df = df.style.map(color_value, subset=val_columns)
         
+        # Arayüze Renkli Bas
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
         
-        # Excel Dosyasını Hazırlama ve Renklendirme
+        # Excel Dosyasını Hazırlama (Doğrudan Stilli Objeyi Export Etme)
         buffer_all = io.BytesIO()
         with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name="Analiz")
+            # Stilli dataframe'i Excel'e gönderiyoruz, renkler birebir aktarılır.
+            styled_df.to_excel(writer, index=False, sheet_name="Analiz")
+            
+            # Excel içindeki sütun genişliklerini otomatik ayarlama (Görsellik için)
             worksheet = writer.sheets['Analiz']
-            
-            green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-            red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-            
-            # Hangi sütunların VAL olduğunu bul
-            val_indices = [i + 1 for i, col in enumerate(df.columns) if 'VAL' in col]
-            
-            for row_idx, row in enumerate(df.itertuples(index=False), start=2):
-                for col_idx in val_indices:
-                    cell_value = row[col_idx - 1]
-                    if isinstance(cell_value, (int, float)):
-                        if cell_value >= 0.05:
-                            worksheet.cell(row=row_idx, column=col_idx).fill = green_fill
-                        elif cell_value <= -0.15:
-                            worksheet.cell(row=row_idx, column=col_idx).fill = red_fill
+            for column_cells in worksheet.columns:
+                length = max(len(str(cell.value)) for cell in column_cells)
+                # Başlık ile verinin en uzununu baz al, +2 boşluk bırak
+                worksheet.column_dimensions[column_cells[0].column_letter].width = length + 2
 
         st.download_button(
-            label="📥 Renk Kodlu Tabloyu Excel Olarak İndir",
+            label="📥 Tam Renkli Tabloyu Excel Olarak İndir",
             data=buffer_all.getvalue(),
-            file_name=f"GMAC_Value_Analizi_V11.01_{datetime.now().strftime('%H%M')}.xlsx",
+            file_name=f"GMAC_Value_Analizi_V11.02_{datetime.now().strftime('%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
