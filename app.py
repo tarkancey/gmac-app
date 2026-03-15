@@ -7,7 +7,7 @@ import io
 from openpyxl.styles import PatternFill
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V11.0 - Renk Kodlu Value Sistemi", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V11.01 - Renk Kodlu Value Sistemi", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
@@ -68,8 +68,27 @@ def get_odds(fixture_id, api_key):
 def get_stats(lig_id, team_id, season_year, api_key):
     headers = {"x-apisports-key": api_key}
     try:
-        s = requests.get("https://v3.football.api-sports.io/teams/statistics", headers=headers, params={"league": lig_id, "team": team_id, "season": season_year}).json().get('response')
-        return {"form": s.get('form', "")[-5:], "hf": float(s['goals']['for']['average']['home']), "ha": float(s['goals']['against']['average']['home']), "af": float(s['goals']['for']['average']['away']), "aa": float(s['goals']['against']['average']['away'])} if s else None
+        data = requests.get("https://v3.football.api-sports.io/teams/statistics", headers=headers, params={"league": lig_id, "team": team_id, "season": season_year}).json()
+        if data.get('errors') and len(data['errors']) > 0: return None
+        
+        s = data.get('response')
+        if not s: return None
+        
+        f = s.get('form')
+        form_str = str(f)[-5:] if f else ""
+        
+        hf = s['goals']['for']['average']['home']
+        ha = s['goals']['against']['average']['home']
+        af = s['goals']['for']['average']['away']
+        aa = s['goals']['against']['average']['away']
+        
+        return {
+            "form": form_str, 
+            "hf": float(hf) if hf else 0.1, 
+            "ha": float(ha) if ha else 0.1, 
+            "af": float(af) if af else 0.1, 
+            "aa": float(aa) if aa else 0.1
+        }
     except: return None
 
 def get_h2h(ev_id, dep_id, api_key):
@@ -144,7 +163,6 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
     }
 
 def calc_value(prob, odd):
-    # DÜZELTİLDİ: Fonksiyon adı calc_value
     if odd == 0.0 or prob == 0.0: return 0.0
     return round(((prob / 100.0) * odd) - 1, 2)
 
@@ -158,7 +176,7 @@ def color_value(val):
     return ''
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V11.0 - Renk Kodlu Value Analizi")
+st.title("⚔️ GMAC V11.01 - Limit Korumalı Renk Kodlu Value")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -178,13 +196,19 @@ if baslat:
     if not api_key:
         st.error("Lütfen sol menüden API Key giriniz!")
     else:
-        all_excel_data = []
+        # API Limit Kontrolü
         headers = {"x-apisports-key": api_key}
+        test_req = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"}).json()
+        
+        if test_req.get('errors') and 'requests' in test_req.get('errors', {}):
+            st.error("🚨 DİKKAT: API Günlük İstek Limitiniz (Rate Limit) dolmuş! H2H ve Eksik verileri çok istek tükettiği için günlük limitiniz bitti. Lütfen yeni bir API Key deneyin veya 24 saat bekleyin.")
+            st.stop()
+            
+        all_excel_data = []
         
         with st.status("Maçlar taranıyor, Value oranları hesaplanıyor...", expanded=True) as status:
             try:
-                resp = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"})
-                valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in resp.json().get('response', []) if i['league']['id'] in TARGET_IDS]
+                valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in test_req.get('response', []) if i['league']['id'] in TARGET_IDS]
                 
                 progress_bar = st.progress(0)
                 total_leagues = len(valid_leagues)
@@ -219,7 +243,6 @@ if baslat:
                                 
                                 tr_tarih_gosterim = datetime.strptime(tr_tarih, "%Y-%m-%d").strftime("%d.%m.%Y")
                                 
-                                # DÜZELTİLDİ: Fonksiyon adları burada calc_value olarak değiştirildi.
                                 all_excel_data.append({
                                     "Tarih": tr_tarih_gosterim, "Sort_Tarih": tr_tarih, "Saat": saat, "Lig": mac['league']['name'],
                                     "Ev": ev_ad, "Dep": dep_ad, "Skor": skor, 
@@ -275,10 +298,10 @@ if st.session_state.analiz_df is not None:
             green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
             red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
             
-            # Hangi sütunların VAL olduğunu bul (Excel indexleri 1'den başlar)
+            # Hangi sütunların VAL olduğunu bul
             val_indices = [i + 1 for i, col in enumerate(df.columns) if 'VAL' in col]
             
-            for row_idx, row in enumerate(df.itertuples(index=False), start=2): # 1. satır başlık
+            for row_idx, row in enumerate(df.itertuples(index=False), start=2):
                 for col_idx in val_indices:
                     cell_value = row[col_idx - 1]
                     if isinstance(cell_value, (int, float)):
@@ -290,9 +313,9 @@ if st.session_state.analiz_df is not None:
         st.download_button(
             label="📥 Renk Kodlu Tabloyu Excel Olarak İndir",
             data=buffer_all.getvalue(),
-            file_name=f"GMAC_Value_Analizi_{datetime.now().strftime('%H%M')}.xlsx",
+            file_name=f"GMAC_Value_Analizi_V11.01_{datetime.now().strftime('%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
     else:
-        st.warning("Seçilen tarihte taranacak maç bulunamadı.")
+        st.warning("Seçilen tarihte taranacak maç bulunamadı. Lütfen daha sonra veya farklı bir tarihte tekrar deneyin.")
