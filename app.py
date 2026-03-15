@@ -4,15 +4,16 @@ from scipy.stats import poisson
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import io
+from openpyxl.styles import PatternFill
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V11.0", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V11.0 - Renk Kodlu Value Sistemi", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
 
-# Ligler Eklendi: 218 (Avusturya), 207 (İsviçre), 848 (Konferans Ligi)
-TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 179, 345, 197, 106, 210, 2, 3, 218, 207, 848]
+# Tüm hedef ligler (Alt ligler ve Kupalar dahil)
+TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 120, 121, 179, 345, 197, 106, 210, 211, 212, 2, 3, 218, 207, 848]
 
 def fix_timezone(date_str):
     try:
@@ -62,7 +63,7 @@ def get_odds(fixture_id, api_key):
                             if v['value'] == "Yes": odds_pool["KGV"].append(float(v['odd']))
     except: pass
     
-    return {k: round(sum(v)/len(v), 2) if v else 0 for k, v in odds_pool.items()}
+    return {k: round(sum(v)/len(v), 2) if v else 0.0 for k, v in odds_pool.items()}
 
 def get_stats(lig_id, team_id, season_year, api_key):
     headers = {"x-apisports-key": api_key}
@@ -72,7 +73,6 @@ def get_stats(lig_id, team_id, season_year, api_key):
     except: return None
 
 def get_h2h(ev_id, dep_id, api_key):
-    # Aralarındaki son 5 maçı bulup Ev Sahibi gözünden W-D-L (Galibiyet-Beraberlik-Mağlubiyet) hesaplar
     headers = {"x-apisports-key": api_key}
     try:
         resp = requests.get("https://v3.football.api-sports.io/fixtures/headtohead", headers=headers, params={"h2h": f"{ev_id}-{dep_id}", "last": 5}).json().get('response', [])
@@ -92,7 +92,6 @@ def get_h2h(ev_id, dep_id, api_key):
         return "0-0-0"
 
 def get_injuries(fixture_id, ev_id, dep_id, api_key):
-    # O maça ait sakat/cezalı oyuncu sayısını çeker
     headers = {"x-apisports-key": api_key}
     try:
         resp = requests.get("https://v3.football.api-sports.io/injuries", headers=headers, params={"fixture": fixture_id}).json().get('response', [])
@@ -136,10 +135,30 @@ def calculate_hybrid_probabilities(ev_xg, dep_xg):
     prob_under_25 = poisson.cdf(2, total_xg) * 100
     prob_under_35 = poisson.cdf(3, total_xg) * 100
     if total_xg > 2.2: prob_under_35 *= 0.85 
-    return {"1": ms1 * norm, "X": msx * norm, "2": ms2 * norm, "KGV": kg_var * norm, "2.5A": prob_under_25, "2.5U": 100 - prob_under_25, "3.5A": prob_under_35, "3.5U": 100 - prob_under_35}
+    
+    return {
+        "1": ms1 * norm, "X": msx * norm, "2": ms2 * norm, 
+        "KGV": kg_var * norm, 
+        "2.5A": prob_under_25, "2.5U": 100 - prob_under_25, 
+        "3.5A": prob_under_35, "3.5U": 100 - prob_under_35
+    }
+
+def calc_value(prob, odd):
+    # Gerçek Value Formülü
+    if odd == 0.0 or prob == 0.0: return 0.0
+    return round(((prob / 100.0) * odd) - 1, 2)
+
+# --- EKRAN RENKLENDİRME ---
+def color_value(val):
+    if isinstance(val, (int, float)):
+        if val >= 0.05:
+            return 'background-color: #c6efce; color: #006100;' # Yeşil
+        elif val <= -0.15:
+            return 'background-color: #ffc7ce; color: #9c0006;' # Kırmızı
+    return ''
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V11.0 - H2H ve Eksik Oyuncu Entegrasyonu")
+st.title("⚔️ GMAC V11.0 - Renk Kodlu Value Analizi")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -162,7 +181,7 @@ if baslat:
         all_excel_data = []
         headers = {"x-apisports-key": api_key}
         
-        with st.status("Veriler çekiliyor. H2H ve Eksikler analiz ediliyor...", expanded=True) as status:
+        with st.status("Maçlar taranıyor, Value oranları hesaplanıyor...", expanded=True) as status:
             try:
                 resp = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"})
                 valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in resp.json().get('response', []) if i['league']['id'] in TARGET_IDS]
@@ -181,7 +200,6 @@ if baslat:
                             ev_ad, dep_ad = mac['teams']['home']['name'], mac['teams']['away']['name']
                             ev_id, dep_id, lig_id, sezon = mac['teams']['home']['id'], mac['teams']['away']['id'], mac['league']['id'], mac['league']['season']
                             
-                            # Puanları hesaplama için çekiyoruz ancak Excel'e yansıtmayacağız
                             points_map = get_league_standings(lig_id, sezon, api_key)
                             ev_puan, dep_puan = points_map.get(ev_id, 0), points_map.get(dep_id, 0)
                             
@@ -192,7 +210,6 @@ if baslat:
                             a_s = get_stats(lig_id, dep_id, sezon, api_key)
                             
                             if h_s and a_s:
-                                # Eksikler ve H2H
                                 ev_eksik, dep_eksik = get_injuries(fix_id, ev_id, dep_id, api_key)
                                 h2h_str = get_h2h(ev_id, dep_id, api_key)
                                 
@@ -202,33 +219,26 @@ if baslat:
                                 
                                 tr_tarih_gosterim = datetime.strptime(tr_tarih, "%Y-%m-%d").strftime("%d.%m.%Y")
                                 
-                                # Görseldeki formata birebir uyan Sözlük Yapısı
                                 all_excel_data.append({
-                                    "Tarih": tr_tarih_gosterim, 
-                                    "Sort_Tarih": tr_tarih, 
-                                    "Saat": saat, 
-                                    "Lig": mac['league']['name'],
-                                    "Ev": ev_ad, 
-                                    "Dep": dep_ad, 
-                                    "Skor": skor, 
-                                    "Ev Eksik": ev_eksik,
-                                    "Dep Eksik": dep_eksik,
-                                    "Ev xG": round(ev_xg, 2), 
-                                    "Dep xG": round(dep_xg, 2),
-                                    "Ev Form": h_s['form'], 
-                                    "Dep Form": a_s['form'], 
-                                    "H2H W-D-L": h2h_str,
-                                    "MS1 Oran": odds["MS1"], "MS1 %": round(probs['1']), 
-                                    "MSX Oran": odds["MSX"], "MSX %": round(probs['X']), 
-                                    "MS2 Oran": odds["MS2"], "MS2 %": round(probs['2']), 
-                                    "KG Var Oran": odds["KGV"], "KG Var %": round(probs['KGV']), 
-                                    "2.5Ü Oran": odds["2.5U"], "2.5Ü %": round(probs['2.5U']), 
-                                    "2.5A Oran": odds["2.5A"], "2.5A %": round(probs['2.5A']), 
-                                    "3.5Ü Oran": odds["3.5U"], "3.5Ü %": round(probs['3.5U']), 
-                                    "3.5A Oran": odds["3.5A"], "3.5A %": round(probs['3.5A'])
+                                    "Tarih": tr_tarih_gosterim, "Sort_Tarih": tr_tarih, "Saat": saat, "Lig": mac['league']['name'],
+                                    "Ev": ev_ad, "Dep": dep_ad, "Skor": skor, 
+                                    "Ev Eksik": ev_eksik, "Dep Eksik": dep_eksik, 
+                                    "Ev xG": round(ev_xg, 2), "Dep xG": round(dep_xg, 2),
+                                    "Ev Form": h_s['form'], "Dep Form": a_s['form'], "H2H W-D-L": h2h_str,
+                                    
+                                    "MS1 Oran": odds["MS1"], "MS1 %": round(probs['1']), "MS1 VAL": calc_val(probs['1'], odds["MS1"]),
+                                    "MSX Oran": odds["MSX"], "MSX %": round(probs['X']), "MSX VAL": calc_val(probs['X'], odds["MSX"]),
+                                    "MS2 Oran": odds["MS2"], "MS2 %": round(probs['2']), "MS2 VAL": calc_val(probs['2'], odds["MS2"]),
+                                    
+                                    "KG Var Oran": odds["KGV"], "KG Var %": round(probs['KGV']), "KGV VAL": calc_val(probs['KGV'], odds["KGV"]),
+                                    
+                                    "2.5Ü Oran": odds["2.5U"], "2.5Ü %": round(probs['2.5U']), "2.5Ü VAL": calc_val(probs['2.5U'], odds["2.5U"]),
+                                    "2.5A Oran": odds["2.5A"], "2.5A %": round(probs['2.5A']), "2.5A VAL": calc_val(probs['2.5A'], odds["2.5A"]),
+                                    "3.5Ü Oran": odds["3.5U"], "3.5Ü %": round(probs['3.5U']), "3.5Ü VAL": calc_val(probs['3.5U'], odds["3.5U"]),
+                                    "3.5A Oran": odds["3.5A"], "3.5A %": round(probs['3.5A']), "3.5A VAL": calc_val(probs['3.5A'], odds["3.5A"])
                                 })
                         except Exception as e: 
-                            pass # Maç atla
+                            pass
                     progress_bar.progress((i + 1) / total_leagues)
                 status.update(label="Analiz Tamamlandı!", state="complete", expanded=False)
                 
@@ -247,18 +257,39 @@ if st.session_state.analiz_df is not None:
     df = st.session_state.analiz_df
     
     if not df.empty:
-        st.success("✅ Analiz tamamlandı! Tüm verileriniz hazır:")
+        st.success("✅ Analiz tamamlandı! Yeşille işaretlenmiş değerleri öncelikli olarak değerlendirebilirsiniz.")
         
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        # Sadece VAL yazan sütunları renklendir (Streamlit ekranı için)
+        val_columns = [col for col in df.columns if 'VAL' in col]
+        styled_df = df.style.map(color_value, subset=val_columns)
         
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        
+        # Excel Dosyasını Hazırlama ve Renklendirme
         buffer_all = io.BytesIO()
         with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
+            df.to_excel(writer, index=False, sheet_name="Analiz")
+            worksheet = writer.sheets['Analiz']
             
+            green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+            red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            
+            # Hangi sütunların VAL olduğunu bul (Excel indexleri 1'den başlar)
+            val_indices = [i + 1 for i, col in enumerate(df.columns) if 'VAL' in col]
+            
+            for row_idx, row in enumerate(df.itertuples(index=False), start=2): # 1. satır başlık
+                for col_idx in val_indices:
+                    cell_value = row[col_idx - 1]
+                    if isinstance(cell_value, (int, float)):
+                        if cell_value >= 0.05:
+                            worksheet.cell(row=row_idx, column=col_idx).fill = green_fill
+                        elif cell_value <= -0.15:
+                            worksheet.cell(row=row_idx, column=col_idx).fill = red_fill
+
         st.download_button(
-            label="📥 Sadeleştirilmiş Tabloyu Excel Olarak İndir",
+            label="📥 Renk Kodlu Tabloyu Excel Olarak İndir",
             data=buffer_all.getvalue(),
-            file_name=f"GMAC_Analiz_{datetime.now().strftime('%H%M')}.xlsx",
+            file_name=f"GMAC_Value_Analizi_{datetime.now().strftime('%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
