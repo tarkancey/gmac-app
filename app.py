@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V11.02 - Renk Kodlu Value Sistemi", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V11.03 - Ağırlıklı Form Sistemi", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
@@ -74,7 +74,8 @@ def get_stats(lig_id, team_id, season_year, api_key):
         if not s: return None
         
         f = s.get('form')
-        form_str = str(f)[-5:] if f else ""
+        # DİKKAT: Artık son 6 maçı alıyoruz
+        form_str = str(f)[-6:] if f else ""
         
         hf = s['goals']['for']['average']['home']
         ha = s['goals']['against']['average']['home']
@@ -120,11 +121,37 @@ def get_injuries(fixture_id, ev_id, dep_id, api_key):
         return 0, 0
 
 def calculate_momentum_xg(h_stats, a_stats, h_pts, a_pts):
-    def form_multiplier(form_str):
-        pts = (form_str.count('W') * 3) + (form_str.count('D') * 1)
-        return 0.7 + (pts / 15.0) * 0.6 
+    # AĞIRLIKLI FORM HESAPLAMA EKLENDİ
+    def weighted_form_multiplier(form_str):
+        if not form_str: return 1.0
+        
+        total_pts = 0
+        max_possible_pts = 0
+        length = len(form_str)
+        
+        # Form string'i (örn: 'WLDWWW') içinde döngüye gir (Eskiden Yeniye doğru)
+        for i, char in enumerate(form_str):
+            # Eğer son 3 maçın içindeysek (en güncel maçlar), ağırlığı artır
+            is_recent = (i >= length - 3) 
+            
+            # Ağırlıklı Puanlama: Son 3 maç için G=5 B=2, Eski maçlar için G=3 B=1
+            win_pt = 5 if is_recent else 3
+            draw_pt = 2 if is_recent else 1
+            
+            max_possible_pts += win_pt
+            
+            if char == 'W':
+                total_pts += win_pt
+            elif char == 'D':
+                total_pts += draw_pt
+                
+        if max_possible_pts == 0: return 1.0
+        
+        # Momentum çarpanını 0.70 ile 1.30 arasında oranla
+        return 0.7 + (total_pts / max_possible_pts) * 0.6 
     
-    h_mom, a_mom = form_multiplier(h_stats['form']), form_multiplier(a_stats['form'])
+    h_mom = weighted_form_multiplier(h_stats['form'])
+    a_mom = weighted_form_multiplier(a_stats['form'])
     
     diff = h_pts - a_pts
     h_pts_multiplier = 1.0 + max(min(diff * 0.01, 0.3), -0.3)
@@ -175,7 +202,7 @@ def color_value(val):
     return ''
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V11.02 - Tam Renkli Excel Çıktısı")
+st.title("⚔️ GMAC V11.03 - Ağırlıklı Form ve Renkli Excel")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -291,23 +318,21 @@ if st.session_state.analiz_df is not None:
         # Arayüze Renkli Bas
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
         
-        # Excel Dosyasını Hazırlama (Doğrudan Stilli Objeyi Export Etme)
+        # Excel Dosyasını Hazırlama
         buffer_all = io.BytesIO()
         with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
-            # Stilli dataframe'i Excel'e gönderiyoruz, renkler birebir aktarılır.
             styled_df.to_excel(writer, index=False, sheet_name="Analiz")
             
-            # Excel içindeki sütun genişliklerini otomatik ayarlama (Görsellik için)
+            # Excel içindeki sütun genişliklerini otomatik ayarlama
             worksheet = writer.sheets['Analiz']
             for column_cells in worksheet.columns:
                 length = max(len(str(cell.value)) for cell in column_cells)
-                # Başlık ile verinin en uzununu baz al, +2 boşluk bırak
                 worksheet.column_dimensions[column_cells[0].column_letter].width = length + 2
 
         st.download_button(
             label="📥 Tam Renkli Tabloyu Excel Olarak İndir",
             data=buffer_all.getvalue(),
-            file_name=f"GMAC_Value_Analizi_V11.02_{datetime.now().strftime('%H%M')}.xlsx",
+            file_name=f"GMAC_Value_Analizi_V11.03_{datetime.now().strftime('%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
