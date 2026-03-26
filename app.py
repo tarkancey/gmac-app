@@ -11,9 +11,8 @@ st.set_page_config(page_title="GMAC V11.03 - Ağırlıklı Form Sistemi", page_i
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
 
-# Tüm hedef ligler (Alt ligler ve Kupalar dahil)
-TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 120, 121, 179, 345, 197, 106, 210, 211, 212, 2, 3, 218, 207, 848]
-
+# Tüm hedef ligler (Dünya Kupası Elemeleri ve UEFA Uluslar Ligi eklendi)
+TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 120, 121, 179, 345, 197, 106, 210, 211, 212, 2, 3, 218, 207, 848, 30, 31, 32, 33, 34, 35, 5]
 def fix_timezone(date_str):
     try:
         if date_str.endswith('Z'): date_str = date_str.replace('Z', '+00:00')
