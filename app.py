@@ -4,15 +4,17 @@ from scipy.stats import poisson
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import io
+from openpyxl.styles import PatternFill
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="GMAC V11.03 - Ağırlıklı Form Sistemi", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GMAC V11.04 - 6 Ay Kuralı ve Turuncu Anomali", page_icon="⚔️", layout="wide")
 
 if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
 
-# Tüm hedef ligler (Dünya Kupası Elemeleri ve UEFA Uluslar Ligi eklendi)
+# Dünya Kupası Elemeleri ve Uluslar Ligi Dahil Tüm Ligler
 TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 120, 121, 179, 345, 197, 106, 210, 211, 212, 2, 3, 218, 207, 848, 30, 31, 32, 33, 34, 35, 5]
+
 def fix_timezone(date_str):
     try:
         if date_str.endswith('Z'): date_str = date_str.replace('Z', '+00:00')
@@ -63,6 +65,39 @@ def get_odds(fixture_id, api_key):
     
     return {k: round(sum(v)/len(v), 2) if v else 0.0 for k, v in odds_pool.items()}
 
+# --- YENİ EKLENEN 6 AY (180 GÜN) FORM FİLTRESİ ---
+@st.cache_data(ttl=3600)
+def get_team_form_6_months(team_id, api_key):
+    headers = {"x-apisports-key": api_key}
+    try:
+        resp = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": team_id, "last": 6}).json().get('response', [])
+        form_str = ""
+        now = datetime.now(timezone.utc)
+        
+        for match in reversed(resp): # Eskiden yeniye doğru oku
+            if match['fixture']['status']['short'] not in ['FT', 'AET', 'PEN']:
+                continue # Sadece bitmiş maçlar
+                
+            match_date = datetime.fromisoformat(match['fixture']['date'].replace('Z', '+00:00'))
+            days_diff = (now - match_date).days
+            
+            # SADECE SON 6 AYDA (180 GÜN) OYNANAN MAÇLARI DİKKATE AL
+            if days_diff <= 180: 
+                h_id = match['teams']['home']['id']
+                h_goals = match['goals']['home']
+                a_goals = match['goals']['away']
+                
+                if h_goals == a_goals:
+                    form_str += "D"
+                elif (h_id == team_id and h_goals > a_goals) or (h_id != team_id and a_goals > h_goals):
+                    form_str += "W"
+                else:
+                    form_str += "L"
+                    
+        return form_str
+    except:
+        return ""
+
 def get_stats(lig_id, team_id, season_year, api_key):
     headers = {"x-apisports-key": api_key}
     try:
@@ -72,17 +107,12 @@ def get_stats(lig_id, team_id, season_year, api_key):
         s = data.get('response')
         if not s: return None
         
-        f = s.get('form')
-        # DİKKAT: Artık son 6 maçı alıyoruz
-        form_str = str(f)[-6:] if f else ""
-        
         hf = s['goals']['for']['average']['home']
         ha = s['goals']['against']['average']['home']
         af = s['goals']['for']['average']['away']
         aa = s['goals']['against']['average']['away']
         
         return {
-            "form": form_str, 
             "hf": float(hf) if hf else 0.1, 
             "ha": float(ha) if ha else 0.1, 
             "af": float(af) if af else 0.1, 
@@ -119,24 +149,18 @@ def get_injuries(fixture_id, ev_id, dep_id, api_key):
     except:
         return 0, 0
 
-def calculate_momentum_xg(h_stats, a_stats, h_pts, a_pts):
-    # AĞIRLIKLI FORM HESAPLAMA EKLENDİ
+def calculate_momentum_xg(h_form, a_form, h_stats, a_stats, h_pts, a_pts):
     def weighted_form_multiplier(form_str):
-        if not form_str: return 1.0
+        if not form_str: return 1.0 # 6 aydır maç yapmamışsa nötr kabul et
         
         total_pts = 0
         max_possible_pts = 0
         length = len(form_str)
         
-        # Form string'i (örn: 'WLDWWW') içinde döngüye gir (Eskiden Yeniye doğru)
         for i, char in enumerate(form_str):
-            # Eğer son 3 maçın içindeysek (en güncel maçlar), ağırlığı artır
             is_recent = (i >= length - 3) 
-            
-            # Ağırlıklı Puanlama: Son 3 maç için G=5 B=2, Eski maçlar için G=3 B=1
             win_pt = 5 if is_recent else 3
             draw_pt = 2 if is_recent else 1
-            
             max_possible_pts += win_pt
             
             if char == 'W':
@@ -145,12 +169,10 @@ def calculate_momentum_xg(h_stats, a_stats, h_pts, a_pts):
                 total_pts += draw_pt
                 
         if max_possible_pts == 0: return 1.0
-        
-        # Momentum çarpanını 0.70 ile 1.30 arasında oranla
         return 0.7 + (total_pts / max_possible_pts) * 0.6 
     
-    h_mom = weighted_form_multiplier(h_stats['form'])
-    a_mom = weighted_form_multiplier(a_stats['form'])
+    h_mom = weighted_form_multiplier(h_form)
+    a_mom = weighted_form_multiplier(a_form)
     
     diff = h_pts - a_pts
     h_pts_multiplier = 1.0 + max(min(diff * 0.01, 0.3), -0.3)
@@ -191,17 +213,19 @@ def calc_value(prob, odd):
     if odd == 0.0 or prob == 0.0: return 0.0
     return round(((prob / 100.0) * odd) - 1, 2)
 
-# --- EKRAN RENKLENDİRME ---
+# --- RENKLENDİRME: TURUNCU (ANOMALİ) EKLENDİ ---
 def color_value(val):
     if isinstance(val, (int, float)):
-        if val >= 0.05:
-            return 'background-color: #c6efce; color: #006100;' # Açık Yeşil arka plan, Koyu Yeşil yazı
+        if val >= 1.20:
+            return 'background-color: #ffe6cc; color: #cc6600;' # Turuncu (Tuzak/Anomali)
+        elif val >= 0.05:
+            return 'background-color: #c6efce; color: #006100;' # Yeşil (Değerli)
         elif val <= -0.15:
-            return 'background-color: #ffc7ce; color: #9c0006;' # Açık Kırmızı arka plan, Koyu Kırmızı yazı
+            return 'background-color: #ffc7ce; color: #9c0006;' # Kırmızı (Zarar)
     return ''
 
 # --- ARAYÜZ (UI) ---
-st.title("⚔️ GMAC V11.03 - Ağırlıklı Form ve Renkli Excel")
+st.title("⚔️ GMAC V11.04 - 6 Ay Filtreli Turuncu Uyarı Sistemi")
 
 with st.sidebar:
     st.header("⚙️ Ayarlar")
@@ -221,17 +245,16 @@ if baslat:
     if not api_key:
         st.error("Lütfen sol menüden API Key giriniz!")
     else:
-        # API Limit Kontrolü
         headers = {"x-apisports-key": api_key}
         test_req = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"}).json()
         
         if test_req.get('errors') and 'requests' in test_req.get('errors', {}):
-            st.error("🚨 DİKKAT: API Günlük İstek Limitiniz (Rate Limit) dolmuş! H2H ve Eksik verileri çok istek tükettiği için günlük limitiniz bitti. Lütfen yeni bir API Key deneyin veya 24 saat bekleyin.")
+            st.error("🚨 DİKKAT: API Günlük İstek Limitiniz (Rate Limit) dolmuş!")
             st.stop()
             
         all_excel_data = []
         
-        with st.status("Maçlar taranıyor, Value oranları hesaplanıyor...", expanded=True) as status:
+        with st.status("Maçlar taranıyor, geçmiş 6 aylık form hesaplanıyor...", expanded=True) as status:
             try:
                 valid_leagues = [{"id": i['league']['id'], "name": i['league']['name'], "year": i['seasons'][0]['year']} for i in test_req.get('response', []) if i['league']['id'] in TARGET_IDS]
                 
@@ -255,6 +278,10 @@ if baslat:
                             ms_durumu = mac['fixture']['status']['short']
                             skor = f"{mac['goals']['home']}-{mac['goals']['away']}" if ms_durumu in ['FT', 'AET', 'PEN'] else ("NS" if ms_durumu == "NS" else ms_durumu)
 
+                            # 6 Ay Kuralı Form Çekimi
+                            h_form = get_team_form_6_months(ev_id, api_key)
+                            a_form = get_team_form_6_months(dep_id, api_key)
+
                             h_s = get_stats(lig_id, ev_id, sezon, api_key)
                             a_s = get_stats(lig_id, dep_id, sezon, api_key)
                             
@@ -262,7 +289,8 @@ if baslat:
                                 ev_eksik, dep_eksik = get_injuries(fix_id, ev_id, dep_id, api_key)
                                 h2h_str = get_h2h(ev_id, dep_id, api_key)
                                 
-                                ev_xg, dep_xg = calculate_momentum_xg(h_s, a_s, ev_puan, dep_puan)
+                                # Yeni 6 aylık formu hesaplamaya gönderiyoruz
+                                ev_xg, dep_xg = calculate_momentum_xg(h_form, a_form, h_s, a_s, ev_puan, dep_puan)
                                 probs = calculate_hybrid_probabilities(ev_xg, dep_xg)
                                 odds = get_odds(fix_id, api_key)
                                 
@@ -273,7 +301,7 @@ if baslat:
                                     "Ev": ev_ad, "Dep": dep_ad, "Skor": skor, 
                                     "Ev Eksik": ev_eksik, "Dep Eksik": dep_eksik, 
                                     "Ev xG": round(ev_xg, 2), "Dep xG": round(dep_xg, 2),
-                                    "Ev Form": h_s['form'], "Dep Form": a_s['form'], "H2H W-D-L": h2h_str,
+                                    "Ev Form": h_form, "Dep Form": a_form, "H2H W-D-L": h2h_str,
                                     
                                     "MS1 Oran": odds["MS1"], "MS1 %": round(probs['1']), "MS1 VAL": calc_value(probs['1'], odds["MS1"]),
                                     "MSX Oran": odds["MSX"], "MSX %": round(probs['X']), "MSX VAL": calc_value(probs['X'], odds["MSX"]),
@@ -306,32 +334,43 @@ if st.session_state.analiz_df is not None:
     df = st.session_state.analiz_df
     
     if not df.empty:
-        st.success("✅ Analiz tamamlandı! Yeşille işaretlenmiş değerleri öncelikli olarak değerlendirebilirsiniz.")
+        st.success("✅ Analiz tamamlandı! Yeşiller Oynanabilir, Turuncular DİKKAT (Anomali) demektir.")
         
-        # Sadece VAL yazan sütunları bul
         val_columns = [col for col in df.columns if 'VAL' in col]
-        
-        # DataFrame'e Stilleri Uygula
         styled_df = df.style.map(color_value, subset=val_columns)
         
-        # Arayüze Renkli Bas
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
         
-        # Excel Dosyasını Hazırlama
         buffer_all = io.BytesIO()
         with pd.ExcelWriter(buffer_all, engine='openpyxl') as writer:
             styled_df.to_excel(writer, index=False, sheet_name="Analiz")
-            
-            # Excel içindeki sütun genişliklerini otomatik ayarlama
             worksheet = writer.sheets['Analiz']
+            
+            orange_fill = PatternFill(start_color="FFE6CC", end_color="FFE6CC", fill_type="solid")
+            green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+            red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            
+            val_indices = [i + 1 for i, col in enumerate(df.columns) if 'VAL' in col]
+            
+            for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+                for col_idx in val_indices:
+                    cell_value = row[col_idx - 1]
+                    if isinstance(cell_value, (int, float)):
+                        if cell_value >= 1.20:
+                            worksheet.cell(row=row_idx, column=col_idx).fill = orange_fill
+                        elif cell_value >= 0.05:
+                            worksheet.cell(row=row_idx, column=col_idx).fill = green_fill
+                        elif cell_value <= -0.15:
+                            worksheet.cell(row=row_idx, column=col_idx).fill = red_fill
+            
             for column_cells in worksheet.columns:
                 length = max(len(str(cell.value)) for cell in column_cells)
                 worksheet.column_dimensions[column_cells[0].column_letter].width = length + 2
 
         st.download_button(
-            label="📥 Tam Renkli Tabloyu Excel Olarak İndir",
+            label="📥 Tam Renkli Tabloyu Excel Olarak İndir (Turuncu Uyarılar Dahil)",
             data=buffer_all.getvalue(),
-            file_name=f"GMAC_Value_Analizi_V11.03_{datetime.now().strftime('%H%M')}.xlsx",
+            file_name=f"GMAC_Value_Analizi_V11.04_{datetime.now().strftime('%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
