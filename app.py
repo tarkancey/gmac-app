@@ -13,7 +13,7 @@ if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
 
 # Dünya Kupası Elemeleri ve Uluslar Ligi Dahil Tüm Ligler
-TARGET_IDS = [203, 204, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 120, 121, 179, 345, 197, 106, 210, 211, 212, 2, 3, 218, 207, 848, 30, 31, 32, 33, 34, 35, 5]
+TARGET_IDS = [203, 204, 205, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 120, 121, 179, 345, 197, 106, 210, 211, 212, 2, 3, 218, 207, 848, 30, 31, 32, 33, 34, 35, 5]
 
 def fix_timezone(date_str):
     try:
