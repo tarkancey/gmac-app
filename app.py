@@ -13,7 +13,48 @@ if "analiz_df" not in st.session_state:
     st.session_state.analiz_df = None
 
 # Dünya Kupası Elemeleri ve Uluslar Ligi Dahil Tüm Ligler
-TARGET_IDS = [203, 204, 205, 39, 40, 140, 141, 78, 79, 135, 136, 61, 62, 88, 89, 94, 144, 119, 120, 121, 179, 345, 197, 106, 210, 211, 212, 2, 3, 218, 207, 848, 30, 31, 32, 33, 34, 35, 5]
+TARGET_IDS = [
+    (1,   "World Cup"),
+    (2,   "UEFA Champions League"),
+    (3,   "UEFA Europa Legaue"),
+    (5,   "UEFA Nations League"),
+    (10,  "Friendlies"),
+    (29,  "Risk- World Cup Elemeleri Africa"),
+    (30,  "AzGol- World Cup Elemeleri Asia"),
+    (31,  "World Cup Elemeleri CONCACAF"),
+    (32,  "World Cup Elemeleri UEFA"),
+    (33,  "ÇokGol-World Cup Elemeleri Oceania"),
+    (34,  "ÇokGol- World Cup Elemeleri South America"),
+    (37,  "World Cup Elemeleri Interkontinental"),
+    (39,  "KG- İngiltere Premier League"),
+    (40,  "Risk- İngiltere Championship"),
+    (61,  "Fransa Ligue 1"),
+    (62,  "Fransa Ligue 2"),
+    (78,  "25U- Almanya Bundesliga"),
+    (79,  "25U- Almanya Bundesliga 2"),
+    (88,  "25U- Hollanda Eredivisie"),
+    (89,  "25U- Hollanda Eerste Divisie - Gol Cenneti"),
+    (94,  "Portekiz Primeira Liga"),
+    (106, "Fav- Polonya Ekstraklasa"), 
+    (119, "Denmark Superliga - İstikrar"),
+    (129, "Arjantin - Primera Nacional"),
+    (135, "25A-İtalya Serie A"),
+    (136, "25A- İtalya Serie B"),
+    (140, "Fav-İspanya La Liga"),
+    (141, "AzGol- İspanya La Liga 2"),
+    (144, "ÇokGol- Belçika Pro League"),
+    (179, "Risk- İskoçya Premiership"),
+    (197, "Yunanistan Super League"),
+    (203, "Türkiye Super Lig"),
+    (204, "Türkiye 1. Lig"),
+    (205, "Türkiye 2. Lig"),
+    (207, "Fav- İsviçre Super League"),
+    (210, "Risk- Hırvatistan HNL"),
+    (218, "ÇokGol- Avusturya Bundesliga"),
+    (307, "Saudi Arabia Pro Legaue"),
+    (345, "Czech Republic"),
+    (848, "Risk- UEFA Konferans Ligi"),
+]
 
 def fix_timezone(date_str):
     try:
