@@ -1,1049 +1,254 @@
-"""
-CMAC - Futbol Mac Analiz ve Tahmin Araci
-Versiyon : V1.18
-Degisiklik: Lig listesi guncellendi (42 lig)
-             LIG ID sutunu eklendi (LIG ile EV SAHIBI arasina)
-             Deger sutunlarinda + isareti kaldirildi
-             Negatif deger sutunlari kirmizi, pozitifler yesil renk
-"""
+import streamlit as st
+import requests
+from scipy.stats import poisson
+import pandas as pd
+from datetime import datetime, timedelta, timezone
+import io
+from openpyxl.styles import PatternFill
 
-import os, sys, time, datetime, math, requests
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="GMAC V11.06 - Tam Donanımlı Analiz", page_icon="⚔️", layout="wide")
 
-# ======================================================================
-#  API ANAHTARI
-# ======================================================================
-APIFOOTBALL_KEY = "b577ac8215b05f6aed10d0aaa56dde3c"
+if "analiz_df" not in st.session_state:
+    st.session_state.analiz_df = None
 
-AF_BOOKMAKERS = [8, 6, 4, 11, 7, 2]
+# Hedef Ligler
+TARGET_IDS = [1, 2, 3, 5, 29, 30, 31, 32, 33, 34, 39, 40, 61, 62, 78, 79, 88, 89, 94, 98, 99, 100, 106, 119, 129, 135, 136, 140, 141, 144, 179, 197, 203, 206, 207, 210, 211, 218, 345, 848]
 
-# ======================================================================
-#  TAKIP EDILECEK LIGLER
-# ======================================================================
-LIGLER = [
-    (1,   "Dunya Kupasi"),
-    (2,   "UEFA Sampiyonlar Ligi"),
-    (3,   "UEFA Avrupa Ligi"),
-    (5,   "UEFA Uluslar Ligi"),
-    (29,  "DK Eleme - Afrika"),
-    (30,  "DK Eleme - Asya"),
-    (31,  "DK Eleme - CONCACAF"),
-    (32,  "DK Eleme - UEFA"),
-    (33,  "DK Eleme - Okyanusya"),
-    (34,  "DK Eleme - G.Amerika"),
-    (39,  "Ingiltere Premier League"),
-    (40,  "Ingiltere Championship"),
-    (61,  "Fransa Ligue 1"),
-    (62,  "Fransa Ligue 2"),
-    (78,  "Almanya Bundesliga"),
-    (79,  "Almanya Bundesliga 2"),
-    (88,  "Hollanda Eredivisie"),
-    (89,  "Hollanda Eerste Divisie"),
-    (94,  "Portekiz Primeira Liga"),
-    (98,  "Japonya J1 League"),
-    (99,  "Japonya J2/J3 League"),
-    (100, "Japonya J3 League"),
-    (106, "Polonya Ekstraklasa"),
-    (119, "Danimarka Superliga"),
-    (129, "Arjantin Primera Nacional"),
-    (135, "Italya Serie A"),
-    (136, "Italya Serie B"),
-    (140, "Ispanya La Liga"),
-    (141, "Ispanya La Liga 2"),
-    (144, "Belcika Pro League"),
-    (179, "Iskocya Premiership"),
-    (197, "Yunanistan Super League"),
-    (203, "Turkiye Super Lig"),
-    (206, "Turkiye Kupası"),
-    (207, "Isvicre Super League"),
-    (210, "Hirvatistan HNL"),
-    (211, "Hirvatistan HNL 2"),
-    (218, "Avusturya Bundesliga"),
-    (345, "Cek Cumhuriyeti Liga"),
-    (848, "UEFA Konferans Ligi"),
-]
-
-AF_BASE = "https://v3.football.api-sports.io"
-SEASON  = datetime.date.today().year - (1 if datetime.date.today().month < 7 else 0)
-
-
-# ======================================================================
-#  API-FOOTBALL
-# ======================================================================
-
-def af_get(endpoint, params=None):
+# --- YARDIMCI FONKSİYONLAR ---
+def fix_timezone(date_str):
     try:
-        r = requests.get(f"{AF_BASE}/{endpoint}",
-                         headers={"x-apisports-key": APIFOOTBALL_KEY},
-                         params=params or {}, timeout=15)
-        if r.status_code != 200:
-            print(f"   x AF HTTP {r.status_code}")
-            return None
-        data = r.json()
-        if data.get("errors"):
-            print(f"   x AF hata: {data['errors']}")
-            return None
-        return data.get("response", [])
-    except Exception as e:
-        print(f"   x AF baglanti: {e}")
-        return None
+        if date_str.endswith('Z'): date_str = date_str.replace('Z', '+00:00')
+        dt_obj = datetime.fromisoformat(date_str)
+        tr_zone = timezone(timedelta(hours=3))
+        dt_tr = dt_obj.astimezone(tr_zone)
+        return dt_tr.strftime("%Y-%m-%d"), dt_tr.strftime("%H:%M") 
+    except: return date_str[:10], date_str[11:16]
 
-
-def fetch_fixtures(target_date):
-    print(f"   Mac listesi cekiliyor: {target_date} ...")
-    result = af_get("fixtures", {"date": target_date.isoformat(),
-                                  "timezone": "Europe/Istanbul"})
-    if not result:
-        return []
-    lid_set  = {l[0] for l in LIGLER}
-    fixtures = [f for f in result if f["league"]["id"] in lid_set]
-    print(f"   -> {len(fixtures)} mac bulundu")
-    return fixtures
-
-
-def fetch_team_stats(team_id, league_id):
-    r = af_get("teams/statistics", {"team": team_id,
-                                     "league": league_id,
-                                     "season": SEASON})
-    if not r: return {}
-    return r[0] if isinstance(r, list) else r
-
-
-def fetch_h2h(home_id, away_id):
-    r = af_get("fixtures/headtohead", {"h2h": f"{home_id}-{away_id}", "last": 10})
-    return r or []
-
-
-def fetch_injuries(fixture_id):
-    r = af_get("injuries", {"fixture": fixture_id})
-    return r or []
-
-
-def parse_form(stats):
-    """Son 6 mac, son 3'e 2x agirlik verilmis form stringe donusturulur."""
-    s = stats.get("form", "") or ""
-    # Son 6 mac al
-    recent = s[-6:] if len(s) >= 6 else s
-    return recent
-
-
-def weighted_form_score(form_str):
-    """
-    Son 6 mac, son 3 maca 2x agirlik.
-    Ornek: WDLLWW → ilk3=WDL(4pt), son3=LWW(6pt)
-    Agirlikli = ilk3*1 + son3*2, max = 15*1 + 15*2 = 45
-    0-100 araligina normalize edilir.
-    """
-    if not form_str:
-        return 50.0  # bilgi yoksa tarafsiz
-    pts = {"W": 3, "D": 1, "L": 0}
-    n = len(form_str)
-    if n <= 3:
-        # Sadece son 3 veya daha az mac var, normal hesap
-        score = sum(pts.get(c, 0) for c in form_str)
-        max_s = n * 3
-        return score / max_s * 100 if max_s > 0 else 50.0
-    # Son 3 ve oncesi
-    split  = n - 3
-    early  = form_str[:split]
-    recent = form_str[split:]
-    early_score  = sum(pts.get(c, 0) for c in early)
-    recent_score = sum(pts.get(c, 0) for c in recent)
-    # Agirlikli toplam: erken x1, son x2
-    weighted = early_score * 1 + recent_score * 2
-    max_w    = len(early) * 3 * 1 + 3 * 3 * 2   # 3*1 + 9*2 = 21 (3+3 mac icin)
-    return min(100.0, weighted / max_w * 100) if max_w > 0 else 50.0
-
-
-def parse_goal_avg(stats):
+@st.cache_data(ttl=3600)
+def get_league_standings(lig_id, season, api_key):
+    headers = {"x-apisports-key": api_key}
     try:
-        g  = stats.get("goals", {})
-        sc = float(g.get("for",     {}).get("average", {}).get("total", 0) or 0)
-        cn = float(g.get("against", {}).get("average", {}).get("total", 0) or 0)
-        return round(sc, 2), round(cn, 2)
-    except:
-        return 0.0, 0.0
+        resp = requests.get("https://v3.football.api-sports.io/standings", headers=headers, params={"league": lig_id, "season": season})
+        return {t['team']['id']: t['points'] for g in resp.json().get('response', [])[0]['league']['standings'] for t in g} if resp.json().get('response') else {}
+    except: return {}
 
+def get_odds(fixture_id, api_key):
+    headers = {"x-apisports-key": api_key}
+    url = "https://v3.football.api-sports.io/odds"
+    odds_pool = {"MS1": [], "MSX": [], "MS2": [], "2.5U": [], "2.5A": [], "3.5U": [], "3.5A": [], "KGV": []}
+    try:
+        data = requests.get(url, headers=headers, params={"fixture": fixture_id}).json().get('response', [])
+        if data:
+            for bk in data[0].get('bookmakers', []):
+                for bet in bk.get('bets', []):
+                    if bet['id'] == 1: 
+                        for v in bet['values']:
+                            if v['value'] == "Home": odds_pool["MS1"].append(float(v['odd']))
+                            elif v['value'] == "Draw": odds_pool["MSX"].append(float(v['odd']))
+                            elif v['value'] == "Away": odds_pool["MS2"].append(float(v['odd']))
+                    elif bet['id'] == 5: 
+                        for v in bet['values']:
+                            if v['value'] == "Over 2.5": odds_pool["2.5U"].append(float(v['odd']))
+                            elif v['value'] == "Under 2.5": odds_pool["2.5A"].append(float(v['odd']))
+                            elif v['value'] == "Over 3.5": odds_pool["3.5U"].append(float(v['odd']))
+                            elif v['value'] == "Under 3.5": odds_pool["3.5A"].append(float(v['odd']))
+                    elif bet['id'] == 8: 
+                         for v in bet['values']:
+                            if v['value'] == "Yes": odds_pool["KGV"].append(float(v['odd']))
+    except: pass
+    return {k: round(sum(v)/len(v), 2) if v else 0.0 for k, v in odds_pool.items()}
 
-def parse_h2h_record(h2h_fixes, home_id):
-    w = d = l = 0
-    for fix in h2h_fixes:
-        try:
-            gh  = fix["goals"]["home"]
-            ga  = fix["goals"]["away"]
-            hid = fix["teams"]["home"]["id"]
-            if gh is None or ga is None: continue
-            if hid == home_id:
-                if gh > ga: w += 1
-                elif gh == ga: d += 1
-                else: l += 1
-            else:
-                if ga > gh: w += 1
-                elif ga == gh: d += 1
-                else: l += 1
-        except: continue
-    return w, d, l
+@st.cache_data(ttl=3600)
+def get_team_form_6_months(team_id, api_key):
+    headers = {"x-apisports-key": api_key}
+    try:
+        resp = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": team_id, "last": 6}).json().get('response', [])
+        form_str = ""
+        now = datetime.now(timezone.utc)
+        for match in reversed(resp):
+            if match['fixture']['status']['short'] not in ['FT', 'AET', 'PEN']: continue
+            m_date = datetime.fromisoformat(match['fixture']['date'].replace('Z', '+00:00'))
+            if (now - m_date).days <= 180:
+                h_id, h_g, a_g = match['teams']['home']['id'], match['goals']['home'], match['goals']['away']
+                if h_g == a_g: form_str += "D"
+                elif (h_id == team_id and h_g > a_g) or (h_id != team_id and a_g > h_g): form_str += "W"
+                else: form_str += "L"
+        return form_str
+    except: return ""
 
-
-def count_injuries(injury_list, home_id, away_id):
-    h_ids = set()
-    a_ids = set()
-    for p in injury_list:
-        tid   = p.get("team",   {}).get("id")
-        pid   = p.get("player", {}).get("id")
-        ptype = (p.get("player", {}).get("type") or "").strip()
-        if not pid: continue
-        if ptype in ("Missing Fixture", "Suspended Fixture"):
-            if tid == home_id:   h_ids.add(pid)
-            elif tid == away_id: a_ids.add(pid)
-    return len(h_ids), len(a_ids)
-
-
-def fetch_all_stats(fixtures):
-    stats_map = {}
-    total = len(fixtures)
-    print(f"\n   {total} mac icin istatistikler cekiliyor...")
-
-    for i, fix in enumerate(fixtures, 1):
-        fid     = fix["fixture"]["id"]
-        home_id = fix["teams"]["home"]["id"]
-        away_id = fix["teams"]["away"]["id"]
-        lig_id  = fix["league"]["id"]
-        home_nm = fix["teams"]["home"]["name"]
-        away_nm = fix["teams"]["away"]["name"]
-        print(f"  [{i:2d}/{total}] {home_nm} - {away_nm}")
-
-        hs  = fetch_team_stats(home_id, lig_id); time.sleep(0.3)
-        as_ = fetch_team_stats(away_id, lig_id); time.sleep(0.3)
-        h2h = fetch_h2h(home_id, away_id);       time.sleep(0.3)
-        inj = fetch_injuries(fid);               time.sleep(0.3)
-
-        hgs, hgc = parse_goal_avg(hs)
-        ags, agc = parse_goal_avg(as_)
-        hw, hd, hl = parse_h2h_record(h2h, home_id)
-        h_inj, a_inj = count_injuries(inj, home_id, away_id)
-
-        stats_map[fid] = {
-            "home_form": parse_form(hs),
-            "away_form": parse_form(as_),
-            "home_goals_scored_avg":   hgs,
-            "home_goals_conceded_avg": hgc,
-            "away_goals_scored_avg":   ags,
-            "away_goals_conceded_avg": agc,
-            "h2h": {"home_w": hw, "draw": hd, "away_w": hl},
-            "home_injured": h_inj,
-            "away_injured": a_inj,
+def get_stats(lig_id, team_id, season_year, api_key):
+    headers = {"x-apisports-key": api_key}
+    try:
+        data = requests.get("https://v3.football.api-sports.io/teams/statistics", headers=headers, params={"league": lig_id, "team": team_id, "season": season_year}).json()
+        s = data.get('response')
+        if not s: return None
+        return {
+            "hf": float(s['goals']['for']['average']['home'] or 0.1),
+            "ha": float(s['goals']['against']['average']['home'] or 0.1),
+            "af": float(s['goals']['for']['average']['away'] or 0.1),
+            "aa": float(s['goals']['against']['average']['away'] or 0.1)
         }
-    return stats_map
+    except: return None
 
+def get_h2h(ev_id, dep_id, api_key):
+    headers = {"x-apisports-key": api_key}
+    try:
+        resp = requests.get("https://v3.football.api-sports.io/fixtures/headtohead", headers=headers, params={"h2h": f"{ev_id}-{dep_id}", "last": 5}).json().get('response', [])
+        w, d, l = 0, 0, 0
+        for m in resp:
+            if m['fixture']['status']['short'] in ['FT', 'AET', 'PEN']:
+                hg, ag = m['goals']['home'], m['goals']['away']
+                if hg == ag: d += 1
+                elif (m['teams']['home']['id'] == ev_id and hg > ag) or (m['teams']['away']['id'] == ev_id and ag > hg): w += 1
+                else: l += 1
+        return f"{w}-{d}-{l}"
+    except: return "0-0-0"
 
-# ======================================================================
-#  API-FOOTBALL ODDS
-# ======================================================================
+def get_injuries(fixture_id, ev_id, dep_id, api_key):
+    headers = {"x-apisports-key": api_key}
+    try:
+        resp = requests.get("https://v3.football.api-sports.io/injuries", headers=headers, params={"fixture": fixture_id}).json().get('response', [])
+        ev_e = sum(1 for p in resp if p['team']['id'] == ev_id)
+        dep_e = sum(1 for p in resp if p['team']['id'] == dep_id)
+        return ev_e, dep_e
+    except: return 0, 0
 
-def avg_odds(vals_list):
-    """Liste halinde gelen oranların ortalamasını al."""
-    clean = [v for v in vals_list if v and v > 1.0]
-    return round(sum(clean) / len(clean), 2) if clean else None
+def calculate_momentum_xg(h_form, a_form, h_stats, a_stats, h_pts, a_pts):
+    def weighted_form_multiplier(form_str):
+        if not form_str: return 1.0
+        t_pts, m_pts, length = 0, 0, len(form_str)
+        for i, char in enumerate(form_str):
+            is_recent = (i >= length - 3)
+            wp, dp = (5, 2) if is_recent else (3, 1)
+            m_pts += wp
+            if char == 'W': t_pts += wp
+            elif char == 'D': t_pts += dp
+        return 0.7 + (t_pts / m_pts) * 0.6 if m_pts > 0 else 1.0
+    
+    h_mom, a_mom = weighted_form_multiplier(h_form), weighted_form_multiplier(a_form)
+    diff = h_pts - a_pts
+    h_mul = 1.0 + max(min(diff * 0.01, 0.3), -0.3)
+    a_mul = 1.0 + max(min(-diff * 0.01, 0.3), -0.3)
+    ex = ((h_stats['hf'] + a_stats['aa']) / 2.0) * h_mom * h_mul
+    ax = ((h_stats['ha'] + a_stats['af']) / 2.0) * a_mom * a_mul
+    return max(0.1, ex), max(0.1, ax)
 
+def calculate_hybrid_probs(ex, ax):
+    m1, mx, m2, kg, tot = 0, 0, 0, 0, 0
+    for h in range(10):
+        for a in range(10):
+            p = poisson.pmf(h, ex) * poisson.pmf(a, ax)
+            if h == a and h in [0, 1]: p *= 1.15
+            tot += p
+            if h > a: m1 += p
+            elif h == a: mx += p
+            else: m2 += p
+            if h > 0 and a > 0: kg += p
+    n = 100.0 / tot if tot > 0 else 0
+    u25 = poisson.cdf(2, ex + ax) * 100
+    u35 = poisson.cdf(3, ex + ax) * 100
+    return {"1": m1*n, "X": mx*n, "2": m2*n, "KGV": kg*n, "2.5A": u25, "2.5U": 100-u25, "3.5A": u35, "3.5U": 100-u35}
 
-def fetch_fixture_odds(fixture_id):
-    """
-    Tek bir mac icin API-Football /odds endpoint'inden oran cek.
-    Donus: {ms1, msx, ms2, over25, under25, over35, under35, kg_yes, kg_no}
-    """
-    result = af_get("odds", {"fixture": fixture_id})
-    if not result:
-        return {}
+def color_v(v):
+    if isinstance(v, (int, float)):
+        if v >= 1.20: return 'background-color: #ffe6cc; color: #cc6600;' 
+        elif v >= 0.05: return 'background-color: #c6efce; color: #006100;' 
+        elif v <= -0.15: return 'background-color: #ffc7ce; color: #9c0006;' 
+    return ''
 
-    ms1_v = []; msx_v = []; ms2_v = []
-    o25_v = []; u25_v = []; o35_v = []; u35_v = []
-    kg_y  = []; kg_n  = []
+# --- UI ---
+with st.sidebar:
+    st.header("⚙️ GMAC V11.06")
+    api_key = st.text_input("API Key:", type="password")
+    menu = st.radio("İşlem Modu:", ["Bugün", "Yarın", "Tarih Gir", "Sonuçlar Bugün", "Sonuçlar Tarih Gir"])
+    
+    bdt = datetime.now()
+    if "Bugün" in menu: s_tar = bdt.strftime("%Y-%m-%d")
+    elif "Yarın" in menu: s_tar = (bdt + timedelta(days=1)).strftime("%Y-%m-%d")
+    else: s_tar = st.date_input("Tarih Seç:", bdt).strftime("%Y-%m-%d")
 
-    for bk in result[0].get("bookmakers", []):
-        if bk.get("id") not in AF_BOOKMAKERS:
-            continue
-        for bet in bk.get("bets", []):
-            name = bet.get("name", "")
-            vals = {v["value"]: float(v["odd"]) for v in bet.get("values", [])}
+    basla = st.button("🚀 Analizi Başlat", type="primary")
 
-            if name == "Match Winner":
-                if "Home" in vals: ms1_v.append(vals["Home"])
-                if "Draw" in vals: msx_v.append(vals["Draw"])
-                if "Away" in vals: ms2_v.append(vals["Away"])
-
-            elif name == "Goals Over/Under":
-                for v in bet.get("values", []):
-                    try:
-                        pt  = float(v.get("value","").split(" ")[-1])
-                        odd = float(v["odd"])
-                        nm  = v.get("value","")
-                        if pt == 2.5:
-                            if nm.startswith("Over"):  o25_v.append(odd)
-                            else:                       u25_v.append(odd)
-                        elif pt == 3.5:
-                            if nm.startswith("Over"):  o35_v.append(odd)
-                            else:                       u35_v.append(odd)
-                    except: continue
-
-            elif name == "Both Teams Score":
-                if "Yes" in vals: kg_y.append(vals["Yes"])
-                if "No"  in vals: kg_n.append(vals["No"])
-
-    return {
-        "ms1":     avg_odds(ms1_v),
-        "msx":     avg_odds(msx_v),
-        "ms2":     avg_odds(ms2_v),
-        "over25":  avg_odds(o25_v),
-        "under25": avg_odds(u25_v),
-        "over35":  avg_odds(o35_v),
-        "under35": avg_odds(u35_v),
-        "kg_yes":  avg_odds(kg_y),
-        "kg_no":   avg_odds(kg_n),
-    }
-
-
-def fetch_all_odds(fixtures):
-    """Tum maclar icin odds cek, fixture_id -> odds_dict map'i donus."""
-    odds_map = {}
-    total = len(fixtures)
-    print(f"\n   {total} mac icin oranlar cekiliyor...")
-    for i, fix in enumerate(fixtures, 1):
-        fid     = fix["fixture"]["id"]
-        home_nm = fix["teams"]["home"]["name"]
-        away_nm = fix["teams"]["away"]["name"]
-        print(f"  [{i:2d}/{total}] {home_nm} - {away_nm}")
-        odds_map[fid] = fetch_fixture_odds(fid)
-        time.sleep(0.3)
-    found = sum(1 for v in odds_map.values() if v.get("ms1"))
-    print(f"   -> {found}/{total} macta oran bulundu")
-    return odds_map
-
-
-# ======================================================================
-#  TAHMIN MOTORU
-# ======================================================================
-
-def form_score(form_str):
-    return sum({"W": 3, "D": 1, "L": 0}.get(c, 0) for c in (form_str or ""))
-
-
-def poisson_p(lam, k):
-    return math.exp(-lam) * lam**k / math.factorial(k)
-
-
-def predict(stats):
-    hgs = stats.get("home_goals_scored_avg",   0) or 0
-    hgc = stats.get("home_goals_conceded_avg", 0) or 0
-    ags = stats.get("away_goals_scored_avg",   0) or 0
-    agc = stats.get("away_goals_conceded_avg", 0) or 0
-    h2h = stats.get("h2h", {})
-    hw  = h2h.get("home_w", 0)
-    hd  = h2h.get("draw",   0)
-    hl  = h2h.get("away_w", 0)
-    h2h_total = hw + hd + hl
-
-    exp_home  = round((hgs + agc) / 2, 2) if (hgs + agc) > 0 else 1.2
-    exp_away  = round((ags + hgc) / 2, 2) if (ags + hgc) > 0 else 1.0
-    exp_total = exp_home + exp_away
-
-    # Poisson simulasyon
-    p1 = px = p2 = 0.0
-    for i in range(8):
-        for j in range(8):
-            p = poisson_p(exp_home, i) * poisson_p(exp_away, j)
-            if i > j:    p1 += p
-            elif i == j: px += p
-            else:         p2 += p
-
-    # Form bileseni — agirlikli (son 3 maca 2x agirlik)
-    hfp = weighted_form_score(stats.get("home_form",""))
-    afp = weighted_form_score(stats.get("away_form",""))
-    ft  = hfp + afp
-    fh  = hfp / ft * 100 if ft > 0 else 50.0
-    fa  = afp / ft * 100 if ft > 0 else 50.0
-
-    # H2H bileseni
-    if h2h_total >= 3:
-        h2h_h = hw / h2h_total * 100
-        h2h_d = hd / h2h_total * 100
-        h2h_a = hl / h2h_total * 100
-        h2h_w = 0.15   # H2H agirligi (onceki: 0.20)
+if basla:
+    if not api_key: st.error("API Key girilmedi!")
     else:
-        h2h_h = h2h_d = h2h_a = 0.0
-        h2h_w = 0.0
+        headers = {"x-apisports-key": api_key}
+        is_results = "Sonuçlar" in menu
+        all_res = []
 
-    # Agirliklar: Poisson %60 + Form %25 + H2H %15
-    # H2H yoksa: Poisson %70 + Form %30
-    form_w = 0.25
-    gw = 1.0 - form_w - h2h_w
-
-    raw1 = p1*100*gw + fh*form_w + h2h_h*h2h_w
-    rawx = px*100*gw + 25.0*form_w + h2h_d*h2h_w
-    raw2 = p2*100*gw + fa*form_w  + h2h_a*h2h_w
-    t    = raw1 + rawx + raw2
-
-    ms1 = round(raw1 / t * 100, 1)
-    msx = round(rawx / t * 100, 1)
-    ms2 = round(raw2 / t * 100, 1)
-
-    # Gol tahminleri
-    lam = exp_total
-    try:
-        p0c = math.exp(-lam); p1c = lam*p0c
-        p2c = lam**2/2*p0c;   p3c = lam**3/6*p0c
-        po25 = round(min(92, max(8,  (1-p0c-p1c-p2c)     * 100)), 1)
-        po35 = round(min(88, max(5,  (1-p0c-p1c-p2c-p3c) * 100)), 1)
-    except:
-        po25, po35 = 50.0, 30.0
-    pu25 = round(100 - po25, 1)
-    pu35 = round(100 - po35, 1)
-
-    try:
-        pkg = round((1-math.exp(-exp_home)) * (1-math.exp(-exp_away)) * 100, 1)
-        pkg = min(90, max(5, pkg))
-    except:
-        pkg = 45.0
-
-    return {
-        "ms1": ms1, "msx": msx, "ms2": ms2,
-        "kg":  pkg,
-        "o25": po25, "u25": pu25,
-        "o35": po35, "u35": pu35,
-        "exp_home": exp_home, "exp_away": exp_away,
-    }
-
-
-# ======================================================================
-#  STYLE HELPERS
-# ======================================================================
-C = {
-    "dk_green":"1B5E20","green":"2E7D32","lt_green":"A5D6A7","lt_green2":"C8E6C9",
-    "dk_blue":"0D47A1","blue":"1565C0","lt_blue":"BBDEFB",
-    "gold":"F9A825","lt_gold":"FFF9C4",
-    "red":"B71C1C","lt_red":"FFCDD2",
-    "white":"FFFFFF","off_white":"F5F5F5","grey":"EEEEEE",
-    "dk_text":"212121","mid_text":"757575",
-    "purple":"6A1B9A","lt_purple":"E1BEE7",
-    "teal":"00695C","lt_teal":"B2DFDB",
-    "orange":"E65100","lt_orange":"FFE0B2",
-}
-
-def _fill(h):  return PatternFill("solid", fgColor=h)
-def _border():
-    s = Side(style="thin", color="BDBDBD")
-    return Border(left=s, right=s, top=s, bottom=s)
-def _align(h="center", wrap=True):
-    return Alignment(horizontal=h, vertical="center", wrap_text=wrap)
-
-def sc(cell, bold=False, size=9, fg="212121", bg=None,
-       align="center", italic=False, border=True, wrap=True):
-    cell.font      = Font(name="Arial", bold=bold, size=size, color=fg, italic=italic)
-    cell.alignment = _align(align, wrap)
-    if bg:     cell.fill   = _fill(bg)
-    if border: cell.border = _border()
-
-def pct_bg(val):
-    if val is None: return C["grey"]
-    if val >= 65:   return C["lt_green"]
-    if val >= 50:   return C["lt_green2"]
-    if val >= 38:   return C["lt_gold"]
-    return C["lt_red"]
-
-def oran_bg(v):
-    if v is None:  return C["grey"]
-    if v <= 1.50:  return C["lt_green"]
-    if v <= 2.20:  return C["lt_green2"]
-    if v <= 3.50:  return C["lt_gold"]
-    return C["lt_red"]
-
-def form_bg(s):
-    sc_ = form_score(s)
-    if sc_ >= 10: return C["lt_green"]
-    if sc_ >= 6:  return C["lt_green2"]
-    if sc_ >= 3:  return C["lt_gold"]
-    return C["lt_red"]
-
-def fmt_pct(v):  return f"{v:.2f}"  if v is not None else ""
-def fmt_or(v):   return f"{v:.2f}"  if v is not None else "-"
-def fmt_xg(v):   return f"{v:.2f}"  if v and v > 0   else "-"
-
-
-# ======================================================================
-#  EXCEL
-# ======================================================================
-
-def build_excel(fixtures, stats_map, odds_map, target_date):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Tahminler"
-    ws.sheet_view.showGridLines = False
-
-    date_str = target_date.strftime("%d.%m.%Y")
-    FINISHED = {"FT","AET","PEN","AWD","WO"}
-
-    # -- On islem --
-    processed = []
-    for fix in fixtures:
-        fid     = fix["fixture"]["id"]
-        home_nm = fix["teams"]["home"]["name"]
-        away_nm = fix["teams"]["away"]["name"]
-        league  = fix["league"]["name"]
-        status  = fix["fixture"]["status"]["short"]
-
-        try:
-            dt        = datetime.datetime.fromisoformat(fix["fixture"]["date"])
-            date_cell = dt.strftime("%d.%m.%Y")
-            time_str  = dt.strftime("%H:%M")
-        except:
-            date_cell = date_str; time_str = "?"
-
-        gh = fix["goals"].get("home")
-        ga = fix["goals"].get("away")
-        skor = f"{gh}-{ga}" if status in FINISHED and gh is not None else ""
-
-        stats = stats_map.get(fid, {})
-        pred  = predict(stats)
-        odds  = odds_map.get(fid, {})
-
-        processed.append({
-            "date": date_cell, "time": time_str, "league": league,
-            "league_id": fix["league"]["id"],
-            "home": home_nm, "away": away_nm, "skor": skor,
-            "stats": stats, "pred": pred, "odds": odds,
-        })
-
-    processed.sort(key=lambda p: (p["date"], p["time"]))
-    N = len(processed)
-
-    # -- Sutun tanimlari --
-    # Toplam: 32 sutun
-    COLS = [
-        # (baslik,          genislik, grup_rengi_hex)
-        ("TARIH",                10, "0D47A1"),   #  1
-        ("SAAT",                  7, "0D47A1"),   #  2
-        ("LIG",                  14, "0D47A1"),   #  3
-        ("LIG\nID",               6, "0D47A1"),   #  4  YENİ
-        ("EV SAHIBI",            18, "0D47A1"),   #  5
-        ("DEPLASMAN",            18, "0D47A1"),   #  6
-        ("SKOR",                  8, "0D47A1"),   #  7
-        ("Ev\nEksik",             7, "E65100"),   #  8
-        ("Dep\nEksik",            7, "E65100"),   #  9
-        ("Ev\nxG",                7, "E65100"),   # 10
-        ("Dep\nxG",               7, "E65100"),   # 11
-        ("FORM\nEv",              8, "1A237E"),   # 12
-        ("FORM\nDep",             8, "1A237E"),   # 13
-        ("H2H\nW-D-L",            9, "1A237E"),   # 14
-        ("MS1\nOran",             8, "1B5E20"),   # 15
-        ("MS1\n(%)",              8, "1B5E20"),   # 16
-        ("MS1\nDeger",            7, "1B5E20"),   # 17
-        ("MSX\nOran",             8, "1B5E20"),   # 18
-        ("MSX\n(%)",              8, "1B5E20"),   # 19
-        ("MSX\nDeger",            7, "1B5E20"),   # 20
-        ("MS2\nOran",             8, "1B5E20"),   # 21
-        ("MS2\n(%)",              8, "1B5E20"),   # 22
-        ("MS2\nDeger",            7, "1B5E20"),   # 23
-        ("KG\nOran",              8, "00695C"),   # 24
-        ("KG\n(%)",               8, "00695C"),   # 25
-        ("KG\nDeger",             7, "00695C"),   # 26
-        ("2.5U\nOran",            8, "00695C"),   # 27
-        ("2.5U\n(%)",             8, "00695C"),   # 28
-        ("2.5U\nDeger",           7, "00695C"),   # 29
-        ("2.5A\nOran",            8, "00695C"),   # 30
-        ("2.5A\n(%)",             8, "00695C"),   # 31
-        ("2.5A\nDeger",           7, "00695C"),   # 32
-        ("3.5U\nOran",            8, "00695C"),   # 33
-        ("3.5U\n(%)",             8, "00695C"),   # 34
-        ("3.5U\nDeger",           7, "00695C"),   # 35
-        ("3.5A\nOran",            8, "00695C"),   # 36
-        ("3.5A\n(%)",             8, "00695C"),   # 37
-        ("3.5A\nDeger",           7, "00695C"),   # 38
-    ]
-    NCOLS = len(COLS)
-
-    # Grup tanimlari
-    GRP = [
-        (1,  7,  "MACLAR",            "0D47A1"),
-        (8,  11, "EKSIK & xG",        "E65100"),
-        (12, 14, "FORM & H2H",        "1A237E"),
-        (15, 23, "MAC SONUCU",        "1B5E20"),
-        (24, 38, "GOL TAHMINLERI",    "00695C"),
-    ]
-
-    # -- Satır 1: Grup baslikları --
-    for s, e, lbl, clr in GRP:
-        ws.merge_cells(f"{get_column_letter(s)}1:{get_column_letter(e)}1")
-        cell = ws.cell(row=1, column=s, value=lbl)
-        cell.font = Font(name="Arial", bold=True, size=8, color="FFFFFF")
-        cell.fill = _fill(clr)
-        cell.alignment = _align()
-        cell.border = _border()
-    ws.row_dimensions[1].height = 16
-
-    # -- Satır 2: Sutun baslikları --
-    for ci, (h, w, clr) in enumerate(COLS, 1):
-        cell = ws.cell(row=2, column=ci, value=h)
-        sc(cell, bold=True, size=8, fg="FFFFFF", bg=clr)
-        ws.column_dimensions[get_column_letter(ci)].width = w
-    ws.row_dimensions[2].height = 30
-    ws.freeze_panes = "A3"
-
-    # -- Lig renk paleti --
-    palettes  = ["BBDEFB","C8E6C9","FFF9C4","E1BEE7","B2DFDB","FFCDD2"]
-    lig_color = {}
-
-    # -- Veri satırları --
-    for ri, p in enumerate(processed, 3):
-        st = p["stats"]; pr = p["pred"]; od = p["odds"]
-        league = p["league"]
-
-        if league not in lig_color:
-            lig_color[league] = palettes[len(lig_color) % len(palettes)]
-        lig_bg = lig_color[league]
-        rb = "F5F5F5" if ri % 2 == 0 else "FFFFFF"
-
-        hform   = st.get("home_form", "")
-        aform   = st.get("away_form", "")
-        h2h_d   = st.get("h2h", {})
-        h2h_str = f'{h2h_d.get("home_w",0)}-{h2h_d.get("draw",0)}-{h2h_d.get("away_w",0)}'
-        h_inj   = st.get("home_injured", 0) or 0
-        a_inj   = st.get("away_injured", 0) or 0
-
-        ms1_or = od.get("ms1");    msx_or = od.get("msx");    ms2_or = od.get("ms2")
-        o25_or = od.get("over25"); u25_or = od.get("under25")
-        o35_or = od.get("over35"); u35_or = od.get("under35")
-        kg_or  = od.get("kg_yes")  # Both Teams Score - Yes orani
-
-        ms_max = max(pr["ms1"], pr["msx"], pr["ms2"])
-
-        # Deger farki: CMAC ihtimali - oranin ima ettigi ihtimal
-        # Oran yoksa None
-        def deger(cmac_pct, oran):
-            if oran is None or oran <= 1.0: return None
-            oran_pct = round(1 / oran * 100, 1)
-            return round(cmac_pct - oran_pct, 1)
-
-        ms1_dg = deger(pr["ms1"], ms1_or)
-        msx_dg = deger(pr["msx"], msx_or)
-        ms2_dg = deger(pr["ms2"], ms2_or)
-        kg_dg  = deger(pr["kg"],  kg_or)
-        o25_dg = deger(pr["o25"], o25_or)
-        u25_dg = deger(pr["u25"], u25_or)
-        o35_dg = deger(pr["o35"], o35_or)
-        u35_dg = deger(pr["u35"], u35_or)
-
-        def fmt_deger(v):
-            if v is None: return ""
-            return f"{v:.1f}" if v >= 0 else f"{v:.1f}"  # artik + yok
-
-        row_vals = [
-            p["date"],                  #  1 TARIH
-            p["time"],                  #  2 SAAT
-            p["league"],                #  3 LIG
-            p["league_id"],             #  4 LIG ID
-            p["home"],                  #  5 EV SAHIBI
-            p["away"],                  #  6 DEPLASMAN
-            p["skor"],                  #  7 SKOR
-            h_inj if h_inj else "",     #  8 Ev Eksik
-            a_inj if a_inj else "",     #  9 Dep Eksik
-            fmt_xg(pr["exp_home"]),     # 10 Ev xG
-            fmt_xg(pr["exp_away"]),     # 11 Dep xG
-            hform,                      # 12 FORM Ev
-            aform,                      # 13 FORM Dep
-            h2h_str,                    # 14 H2H
-            fmt_or(ms1_or),             # 15 MS1 Oran
-            fmt_pct(pr["ms1"]),         # 16 MS1%
-            fmt_deger(ms1_dg),          # 17 MS1 Deger
-            fmt_or(msx_or),             # 18 MSX Oran
-            fmt_pct(pr["msx"]),         # 19 MSX%
-            fmt_deger(msx_dg),          # 20 MSX Deger
-            fmt_or(ms2_or),             # 21 MS2 Oran
-            fmt_pct(pr["ms2"]),         # 22 MS2%
-            fmt_deger(ms2_dg),          # 23 MS2 Deger
-            fmt_or(kg_or),              # 24 KG Oran
-            fmt_pct(pr["kg"]),          # 25 KG%
-            fmt_deger(kg_dg),           # 26 KG Deger
-            fmt_or(o25_or),             # 27 2.5U Oran
-            fmt_pct(pr["o25"]),         # 28 2.5U%
-            fmt_deger(o25_dg),          # 29 2.5U Deger
-            fmt_or(u25_or),             # 30 2.5A Oran
-            fmt_pct(pr["u25"]),         # 31 2.5A%
-            fmt_deger(u25_dg),          # 32 2.5A Deger
-            fmt_or(o35_or),             # 33 3.5U Oran
-            fmt_pct(pr["o35"]),         # 34 3.5U%
-            fmt_deger(o35_dg),          # 35 3.5U Deger
-            fmt_or(u35_or),             # 36 3.5A Oran
-            fmt_pct(pr["u35"]),         # 37 3.5A%
-            fmt_deger(u35_dg),          # 38 3.5A Deger
-        ]
-
-        for ci, val in enumerate(row_vals, 1):
-            cell = ws.cell(row=ri, column=ci, value=val)
-
-            def dg_style(dg):
-                """Pozitif: yesil ton, negatif: kirmizi ton, None: sade"""
-                if dg is None:    return {"fg": "BDBDBD", "bg": rb}
-                if dg >=  5:      return {"fg": "1B5E20", "bg": "A5D6A7"}
-                if dg >=  2:      return {"fg": "2E7D32", "bg": "C8E6C9"}
-                if dg >=  0:      return {"fg": "388E3C", "bg": rb}
-                if dg >= -2:      return {"fg": "E65100", "bg": "FFE0B2"}
-                if dg >= -5:      return {"fg": "C62828", "bg": "FFCDD2"}
-                return             {"fg": "B71C1C", "bg": "EF9A9A"}
-
-            if ci == 1:                  # TARIH
-                sc(cell, size=9, bg=rb, align="left", wrap=False)
-            elif ci == 3:                # LIG
-                sc(cell, bold=True, size=8, fg="212121", bg=lig_bg, align="left", wrap=False)
-            elif ci == 4:                # LIG ID
-                sc(cell, size=8, fg="757575", bg=lig_bg, align="center", wrap=False)
-            elif ci in (5, 6):           # EV/DEP
-                sc(cell, size=10, bg=rb, align="left", wrap=False)
-            elif ci == 7:                # Skor
-                sc(cell, size=9, bold=bool(p["skor"]), bg=rb)
-            elif ci in (8, 9):           # Eksik
-                v = h_inj if ci == 8 else a_inj
-                bg_ = "FFCDD2" if v >= 3 else ("FFE0B2" if v >= 1 else rb)
-                sc(cell, bold=(v > 0), size=9, bg=bg_)
-            elif ci in (10, 11):         # xG
-                sc(cell, size=9, italic=True, fg="757575", bg=rb)
-            elif ci in (12, 13):         # Form Ev/Dep
-                sc(cell, size=9, bg=rb)
-            elif ci in (15, 18, 21):     # MS Oran
-                sc(cell, size=9, bg=rb)
-            elif ci in (16, 19, 22):     # MS %
-                v = pr["ms1"] if ci==16 else (pr["msx"] if ci==19 else pr["ms2"])
-                bold_ = (v == ms_max)
-                sc(cell, bold=bold_, size=9, bg=pct_bg(v) if bold_ else rb)
-            elif ci in (17, 20, 23):     # MS Deger
-                dg = ms1_dg if ci==17 else (msx_dg if ci==20 else ms2_dg)
-                s  = dg_style(dg)
-                sc(cell, bold=(dg is not None and abs(dg)>=5), size=9, **s)
-            elif ci == 24:               # KG Oran
-                sc(cell, size=9, bg=rb)
-            elif ci == 25:               # KG%
-                sc(cell, size=9, bg=pct_bg(pr["kg"]))
-            elif ci == 26:               # KG Deger
-                s = dg_style(kg_dg)
-                sc(cell, bold=(kg_dg is not None and abs(kg_dg)>=5), size=9, **s)
-            elif ci in (27, 30, 33, 36): # Gol Oran
-                sc(cell, size=9, bg=rb)
-            elif ci in (28, 31, 34, 37): # Gol %
-                v = (pr["o25"] if ci==28 else pr["u25"] if ci==31 else
-                     pr["o35"] if ci==34 else pr["u35"])
-                sc(cell, size=9, bg=pct_bg(v))
-            elif ci in (29, 32, 35, 38): # Gol Deger
-                dg = (o25_dg if ci==29 else u25_dg if ci==32 else
-                      o35_dg if ci==35 else u35_dg)
-                s  = dg_style(dg)
-                sc(cell, bold=(dg is not None and abs(dg)>=5), size=9, **s)
-            else:
-                sc(cell, size=9, bg=rb)
-
-        ws.row_dimensions[ri].height = 22
-
-    # -- Lejant --
-    leg_row = N + 4
-    ws.row_dimensions[leg_row].height = 5
-    leg_row += 1
-    ws.merge_cells(f"A{leg_row}:{get_column_letter(NCOLS)}{leg_row}")
-    lc = ws.cell(row=leg_row, column=1,
-        value="Eksik: Sakat+Cezali (Missing/Suspended Fixture).  "
-              "xG: Beklenen gol (Poisson).  "
-              "Oran: Bahis sitesi ortalamasi (The Odds API) — yok ise '-'.  "
-              "Deger = CMAC ihtimali - oranin ima ettigi ihtimal: "
-              "Koy Yesil>=+5 · Acik Yesil>=+2 · Sari -2/+2 · Turuncu<=-2 · Kirmizi<=-5.  "
-              "MS%: Poisson %60 + Form %20 + H2H %20.  "
-              "Oran renk: <=1.50 Yesil · <=2.20 Acik Yesil · <=3.50 Sari · >3.50 Kirmizi.  "
-              "Yuzde renk: >=65 Yesil · >=50 Acik Yesil · >=38 Sari · <38 Kirmizi.")
-    lc.font = Font(name="Arial", italic=True, size=7, color="757575")
-    lc.fill = _fill("EEEEEE"); lc.alignment = _align("left")
-    ws.row_dimensions[leg_row].height = 14
-
-    return wb, processed
-
-
-# ======================================================================
-#  MAIN
-# ======================================================================
-
-# ======================================================================
-#  LIG / TAKIM ARAMA (Lig_Id entegrasyonu)
-# ======================================================================
-
-def search_leagues_by_keyword(keyword):
-    results = af_get("leagues", {"search": keyword})
-    ligler  = []
-    for item in results or []:
-        ligler.append({
-            "id":      item["league"]["id"],
-            "name":    item["league"]["name"],
-            "type":    item["league"]["type"],
-            "country": item["country"]["name"],
-        })
-    return sorted(ligler, key=lambda x: (x["country"], x["name"]))
-
-
-def search_leagues_by_team(keyword):
-    teams = af_get("teams", {"search": keyword})
-    results = []
-    for t in (teams or [])[:5]:
-        team_id   = t["team"]["id"]
-        team_name = t["team"]["name"]
-        leagues   = af_get("leagues", {"team": team_id, "current": "true"})
-        for item in (leagues or []):
-            results.append({
-                "takim":  team_name,
-                "lig_id": item["league"]["id"],
-                "lig":    item["league"]["name"],
-                "tip":    item["league"]["type"],
-            })
-    return results
-
-
-def run_lig_search():
-    """Interaktif lig/takim arama modu."""
-    print()
-    print("  ╔════════════════════════════════════════╗")
-    print("  ║     Lig / Takim ID Arama               ║")
-    print("  ║     Cikis icin bos birakip Enter'a bas ║")
-    print("  ╚════════════════════════════════════════╝")
-    while True:
-        try:
-            keyword = input("\n  Arama (ulke / lig / takim): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            break
-        if not keyword:
-            break
-
-        print(f"\n  Araniyor: '{keyword}' ...")
-        ligler = search_leagues_by_keyword(keyword)
-        if ligler:
-            print(f"\n  {'ID':<8} {'Ulke':<22} {'Lig Adi':<40} {'Tip'}")
-            print("  " + "-" * 80)
-            for l in ligler:
-                print(f"  {l['id']:<8} {l['country']:<22} {l['name']:<40} {l['type']}")
-            print(f"\n  {len(ligler)} sonuc.")
+        with st.status(f"{s_tar} verileri toplanıyor...") as status:
+            l_resp = requests.get("https://v3.football.api-sports.io/leagues", headers=headers, params={"current": "true"}).json()
+            v_leagues = [i for i in l_resp.get('response', []) if i['league']['id'] in TARGET_IDS]
+            
+            for l in v_leagues:
+                lid, lyr = l['league']['id'], l['seasons'][0]['year']
+                f_resp = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, 
+                                      params={"league": lid, "season": lyr, "from": s_tar, "to": s_tar, "timezone": "Europe/Istanbul"}).json().get('response', [])
+                
+                for f in f_resp:
+                    trd, trt = fix_timezone(f['fixture']['date'])
+                    skor = f"{f['goals']['home']}-{f['goals']['away']}" if f['fixture']['status']['short'] in ['FT', 'AET', 'PEN'] else ""
+                    fid = f['fixture']['id']
+                    ev_id, dep_id = f['teams']['home']['id'], f['teams']['away']['id']
+                    
+                    row = {"Tarih": datetime.strptime(trd, "%Y-%m-%d").strftime("%d.%m.%Y"), "Saat": trt, "Lig": l['league']['name'], 
+                           "Lig ID": lid, "Ev": f['teams']['home']['name'], "Dep": f['teams']['away']['name'], "Skor": skor, "Sort": trd}
+                    
+                    if not is_results:
+                        # Full Analiz Bloğu
+                        ev_e, dep_e = get_injuries(fid, ev_id, dep_id, api_key)
+                        h2h = get_h2h(ev_id, dep_id, api_key)
+                        h_form, a_form = get_team_form_6_months(ev_id, api_key), get_team_form_6_months(dep_id, api_key)
+                        pts = get_league_standings(lid, lyr, api_key)
+                        h_s, a_s = get_stats(lid, ev_id, lyr, api_key), get_stats(lid, dep_id, lyr, api_key)
+                        
+                        if h_s and a_s:
+                            exg, axg = calculate_momentum_xg(h_form, a_form, h_s, a_s, pts.get(ev_id, 0), pts.get(dep_id, 0))
+                            p = calculate_hybrid_probs(exg, axg)
+                            o = get_odds(fid, api_key)
+                            
+                            row.update({
+                                "Ev Eksik": ev_e, "Dep Eksik": dep_e, "Ev xG": round(exg, 2), "Dep xG": round(axg, 2),
+                                "Ev Form": h_form, "Dep Form": a_form, "H2H W-D-L": h2h,
+                                "MS1 Oran": o["MS1"], "MS1 %": round(p['1']), "MS1 VAL": round(((p['1']/100)*o["MS1"])-1, 2) if o["MS1"]>0 else 0,
+                                "MSX Oran": o["MSX"], "MSX %": round(p['X']), "MSX VAL": round(((p['X']/100)*o["MSX"])-1, 2) if o["MSX"]>0 else 0,
+                                "MS2 Oran": o["MS2"], "MS2 %": round(p['2']), "MS2 VAL": round(((p['2']/100)*o["MS2"])-1, 2) if o["MS2"]>0 else 0,
+                                "KG Var Oran": o["KGV"], "KG Var %": round(p['KGV']), "KGV VAL": round(((p['KGV']/100)*o["KGV"])-1, 2) if o["KGV"]>0 else 0,
+                                "2.5Ü Oran": o["2.5U"], "2.5Ü %": round(p['2.5U']), "2.5Ü VAL": round(((p['2.5U']/100)*o["2.5U"])-1, 2) if o["2.5U"]>0 else 0,
+                                "2.5A Oran": o["2.5A"], "2.5A %": round(p['2.5A']), "2.5A VAL": round(((p['2.5A']/100)*o["2.5A"])-1, 2) if o["2.5A"]>0 else 0,
+                                "3.5Ü Oran": o["3.5U"], "3.5Ü %": round(p['3.5U']), "3.5Ü VAL": round(((p['3.5U']/100)*o["3.5U"])-1, 2) if o["3.5U"]>0 else 0,
+                                "3.5A Oran": o["3.5A"], "3.5A %": round(p['3.5A']), "3.5A VAL": round(((p['3.5A']/100)*o["3.5A"])-1, 2) if o["3.5A"]>0 else 0
+                            })
+                    all_res.append(row)
+            status.update(label="Analiz Hazır!", state="complete")
+        
+        if all_res:
+            st.session_state.analiz_df = pd.DataFrame(all_res).sort_values(by=["Sort", "Saat"]).drop(columns=["Sort"])
         else:
-            print("  Lig/ulke bulunamadi, takim olarak aranıyor...")
-            tl = search_leagues_by_team(keyword)
-            if tl:
-                print(f"\n  {'Takim':<25} {'Lig ID':<8} {'Lig Adi':<35} {'Tip'}")
-                print("  " + "-" * 75)
-                for r in tl:
-                    print(f"  {r['takim']:<25} {r['lig_id']:<8} {r['lig']:<35} {r['tip']}")
-                print(f"\n  {len(tl)} sonuc.")
-            else:
-                print(f"  '{keyword}' icin sonuc bulunamadi.")
+            st.warning("Veri bulunamadı.")
 
-    print("\n  Ana menüye donuluyor...")
+if st.session_state.analiz_df is not None:
+    df = st.session_state.analiz_df
+    v_cols = [c for c in df.columns if 'VAL' in c]
+    st.dataframe(df.style.map(color_v, subset=v_cols) if v_cols else df, use_container_width=True, hide_index=True)
 
+    # XLSX
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as wr:
+        df.to_excel(wr, index=False, sheet_name="Analiz")
+        ws = wr.sheets['Analiz']
+        f_o, f_g, f_r = PatternFill("solid", "FFE6CC"), PatternFill("solid", "C6EFCE"), PatternFill("solid", "FFC7CE")
+        v_idx = [i + 1 for i, c in enumerate(df.columns) if 'VAL' in c]
+        for r_idx, row in enumerate(df.itertuples(index=False), 2):
+            for c_idx in v_idx:
+                val = row[c_idx - 1]
+                if isinstance(val, (int, float)):
+                    cell = ws.cell(r_idx, c_idx)
+                    if val >= 1.20: cell.fill = f_o
+                    elif val >= 0.05: cell.fill = f_g
+                    elif val <= -0.15: cell.fill = f_r
+        for col in ws.columns:
+            ws.column_dimensions[col[0].column_letter].width = 15
 
-def show_results(target_date=None):
-    """
-    Sadece bitmis mac sonuclarini goster.
-    Tek API istegi - istatistik/odds cekilmez.
-    """
-    if target_date is None:
-        target_date = datetime.date.today()
-
-    print(f"\n  Sonuclar: {target_date.strftime('%d.%m.%Y')} tarihli bitmis maclar")
-    print("  " + "─" * 70)
-
-    result = af_get("fixtures", {
-        "date":     target_date.isoformat(),
-        "timezone": "Europe/Istanbul",
-    })
-
-    if not result:
-        print("  Veri alinamadi veya mac bulunamadi.")
-        input("\n  Devam etmek icin Enter'a basin...")
-        return
-
-    FINISHED = {"FT", "AET", "PEN", "AWD", "WO"}
-    lid_set   = {l[0] for l in LIGLER}
-    lig_adi   = {l[0]: l[1] for l in LIGLER}
-
-    # Sadece bitmis ve takip edilen ligler
-    bitmis = [
-        f for f in result
-        if f["fixture"]["status"]["short"] in FINISHED
-        and f["league"]["id"] in lid_set
-    ]
-
-    if not bitmis:
-        print(f"  Bu tarihte bitmis mac bulunamadi.")
-        input("\n  Devam etmek icin Enter'a basin...")
-        return
-
-    # Lig bazinda grupla ve sirala
-    bitmis.sort(key=lambda f: (
-        lig_adi.get(f["league"]["id"], f["league"]["name"]),
-        f["fixture"]["date"]
-    ))
-
-    # Terminal ciktisi
-    onceki_lig = None
-    toplam     = 0
-    for f in bitmis:
-        lig_id  = f["league"]["id"]
-        lig_nm  = lig_adi.get(lig_id, f["league"]["name"])
-        home    = f["teams"]["home"]["name"]
-        away    = f["teams"]["away"]["name"]
-        gh      = f["goals"].get("home", "?")
-        ga      = f["goals"].get("away", "?")
-        skor    = f"{gh} - {ga}"
-        durum   = f["fixture"]["status"]["short"]
-
-        if lig_nm != onceki_lig:
-            print(f"\n  [{lig_nm}]")
-            onceki_lig = lig_nm
-
-        print(f"  {home:<28} {skor:^7} {away}")
-        toplam += 1
-
-    print(f"\n  {'─'*70}")
-    print(f"  Toplam {toplam} mac sonucu  |  "
-          f"Takip edilen liglerin disindaki maclar gosterilmedi.")
-    input("\n  Ana menuye donmek icin Enter'a basin...")
-
-
-def select_date():
-    """
-    Tarih secim menusu.
-    - Komut satirindan tarih verildiyse direkt kullan: python CMAC_V1.16.py 2026-03-20
-    - Verildiyse interaktif menu goster.
-    """
-    today = datetime.date.today()
-
-    if len(sys.argv) > 1:
-        arg = sys.argv[1].strip()
-        try:
-            d = datetime.date.fromisoformat(arg)
-            print(f"   Tarih (komut satirindan): {d.strftime('%d.%m.%Y')}")
-            return d
-        except ValueError:
-            print(f"   Gecersiz tarih formati '{arg}'. Beklenen: YYYY-MM-DD")
-            print("   Interaktif menu aciliyor...")
-
-    # Interaktif menu
-    tomorrow  = today + datetime.timedelta(days=1)
-    day_after = today + datetime.timedelta(days=2)
-    yesterday = today - datetime.timedelta(days=1)
-
-    while True:
-        print()
-        print("  ┌─────────────────────────────────────────┐")
-        print("  │          CMAC - Ana Menu  V1.17         │")
-        print("  ├─────────────────────────────────────────┤")
-        print(f"  │  1  Bugun          ({today.strftime('%d.%m.%Y')})         │")
-        print(f"  │  2  Yarin          ({tomorrow.strftime('%d.%m.%Y')})         │")
-        print(f"  │  3  Obur gun       ({day_after.strftime('%d.%m.%Y')})         │")
-        print(f"  │  4  Dun            ({yesterday.strftime('%d.%m.%Y')})         │")
-        print("  │  5  Ozel tarih gir (YYYY-MM-DD)         │")
-        print("  │  6  Lig / Takim ID ara                  │")
-        print(f"  │  7  Sonuclar - Bugun ({today.strftime('%d.%m.%Y')})       │")
-        print("  │  8  Sonuclar - Tarih sec                │")
-        print("  └─────────────────────────────────────────┘")
-        print()
-
-        try:
-            secim = input("  Seciminiz (1-8): ").strip()
-            if secim == "1":
-                return today
-            elif secim == "2":
-                return tomorrow
-            elif secim == "3":
-                return day_after
-            elif secim == "4":
-                return yesterday
-            elif secim == "5":
-                tarih_str = input("  Tarih girin (YYYY-MM-DD): ").strip()
-                return datetime.date.fromisoformat(tarih_str)
-            elif secim == "6":
-                run_lig_search()
-            elif secim == "7":
-                show_results()
-            elif secim == "8":
-                try:
-                    tarih_str = input("  Tarih girin (YYYY-MM-DD): ").strip()
-                    show_results(datetime.date.fromisoformat(tarih_str))
-                except ValueError:
-                    print("  Gecersiz tarih. Ornek: 2026-03-20")
-            else:
-                print("  Gecersiz secim. 1-8 arasi bir sayi girin.")
-        except ValueError:
-            print("  Gecersiz tarih formati. Ornek: 2026-03-20")
-        except (KeyboardInterrupt, EOFError):
-            print("\n  Iptal edildi.")
-            sys.exit(0)
-
-
-def main():
-    print()
-    print("  ╔══════════════════════════════════════╗")
-    print("  ║   CMAC - Mac Analiz ve Tahmin V1.18  ║")
-    print("  ╚══════════════════════════════════════╝")
-
-    if not APIFOOTBALL_KEY or APIFOOTBALL_KEY == "BURAYA_ANAHTAR_GIRIN":
-        print("\n  HATA: APIFOOTBALL_KEY girilmemis!")
-        return
-
-    target_date = select_date()
-    today       = datetime.date.today()
-    is_past     = target_date < today
-
-    print(f"\n   Tarih : {target_date.strftime('%d.%m.%Y')}", end="")
-    if is_past:
-        print("  [GECMIS - istatistik/odds atlanacak]")
-    elif target_date == today:
-        print("  [BUGUN]")
-    else:
-        days_ahead = (target_date - today).days
-        print(f"  [GELECEK +{days_ahead} gun]")
-    print("=" * 60)
-
-    fixtures = fetch_fixtures(target_date)
-    if not fixtures:
-        print("   Mac bulunamadi.")
-        return
-
-    # Gecmis tarih: istatistik ve odds cekme, bos map gonder
-    if is_past:
-        print("\n   Gecmis tarih — istatistik ve oranlar atlanıyor.")
-        stats_map = {}
-        odds_map  = {}
-    else:
-        stats_map = fetch_all_stats(fixtures)
-        odds_map  = fetch_all_odds(fixtures)
-
-    print(f"\n   Excel olusturuluyor ({len(fixtures)} mac)...")
-    wb, processed = build_excel(fixtures, stats_map, odds_map, target_date)
-
-    now      = datetime.datetime.now()
-    date_tag = target_date.strftime("%Y%m%d")
-    time_tag = now.strftime("%H%M")
-    out_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        f"CMAC_V1.18_{date_tag}_{time_tag}.xlsx"
-    )
-    wb.save(out_path)
-    print(f"\n   Kaydedildi: {out_path}")
-
-    print(f"\n{'─'*90}")
-    print(f"{'TARIH':<11}{'SAAT':<6}{'LIG':<18}{'MAC':<30}{'SKOR':>8}{'MS1%':>6}{'MSX%':>6}{'MS2%':>6}")
-    print("─" * 90)
-    for p in processed:
-        pr   = p["pred"]
-        mac  = f"{p['home'][:13]} - {p['away'][:13]}"
-        skor = p["skor"] if p["skor"] else "-"
-        print(f"{p['date']:<11}{p['time']:<6}{p['league'][:16]:<18}{mac:<30}"
-              f"{skor:>8}{pr['ms1']:>5.1f}%{pr['msx']:>5.1f}%{pr['ms2']:>5.1f}%")
-    print("─" * 90)
-    print(f"   Toplam {len(processed)} mac")
-
-
-if __name__ == "__main__":
-    main()
-
+    st.download_button("📥 GMAC V11.06 XLSX İndir", buf.getvalue(), f"GMAC_V11.06_{s_tar}.xlsx", type="primary")
